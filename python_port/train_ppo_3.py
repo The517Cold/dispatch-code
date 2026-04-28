@@ -234,6 +234,8 @@ class PetriNetGCNPPOProHQ(PetriNetGCNPPOPro):
 
             "gamma": _env_float("GCN_PPO_HQ_GAMMA", 0.999),
             "lr": _env_float("GCN_PPO_HQ_LR", 3e-4),
+            # ★ 新增：L2正则化系数，抑制模型过拟合到特定训练网络的拓扑细节
+            "weight_decay": _env_float("GCN_PPO_HQ_WEIGHT_DECAY", 1e-5),
             "steps_per_epoch": _env_int("GCN_PPO_HQ_STEPS_PER_EPOCH", 6144),  # 12288
             "minibatch_size": _env_int("GCN_PPO_HQ_MINIBATCH_SIZE", 128),
             "ppo_epochs": _env_int("GCN_PPO_HQ_PPO_EPOCHS", 4),  # ppo更新轮数
@@ -245,8 +247,10 @@ class PetriNetGCNPPOProHQ(PetriNetGCNPPOPro):
             "temperature_start": _env_float("GCN_PPO_HQ_TEMPERATURE_START", 2.3),
             "temperature_end": _env_float("GCN_PPO_HQ_TEMPERATURE_END", 1.4),
 
-            "reward_goal_bonus": _env_float("GCN_PPO_HQ_REWARD_GOAL", 1500.0),
-            "reward_deadlock_penalty": _env_float("GCN_PPO_HQ_REWARD_DEADLOCK", 90.0), # 2000
+            # ★ 修正：原值1500会被全局clip到100，使目标奖励信号完全失效。
+            # 调小为150后，目标奖励可以完整传递，makespan改进也能产生有效梯度信号。
+            "reward_goal_bonus": _env_float("GCN_PPO_HQ_REWARD_GOAL", 150.0),
+            "reward_deadlock_penalty": _env_float("GCN_PPO_HQ_REWARD_DEADLOCK", 90.0),
             "reward_progress_weight": 2.0,
             "reward_repeat_penalty": _env_float("GCN_PPO_HQ_REWARD_REPEAT", 2.7),
             "reward_time_scale": _env_float("GCN_PPO_HQ_REWARD_TIME_SCALE", 1000.0),
@@ -257,6 +261,7 @@ class PetriNetGCNPPOProHQ(PetriNetGCNPPOPro):
             "pool_eval_interval": _env_int("GCN_PPO_HQ_POOL_EVAL_INTERVAL", 4),  # 每4个epoch评估一次
             "curriculum_epochs": _env_int("GCN_PPO_HQ_CURRICULUM_EPOCHS", 4),  # 预热阶段epoch数
 
+            # ★ 新增：eval_env_pool 独立评估间隔（0=禁用；通过实例属性传入，不进参数字典）
             "mask_cache_limit": _env_int("GCN_PPO_HQ_MASK_CACHE_LIMIT", 40000),
             "mixed_rollout": os.environ.get("GCN_PPO_HQ_MIXED_ROLLOUT", "1") == "1",
             "cross_env_gae": os.environ.get("GCN_PPO_HQ_CROSS_ENV_GAE", "1") == "1",
@@ -366,18 +371,21 @@ def main():
         similar_finetune_step_scale = float(os.environ.get("GCN_PPO_HQ_SIMILAR_FINETUNE_SCALE", "0.35"))
         similar_finetune_min_steps = int(os.environ.get("GCN_PPO_HQ_SIMILAR_FINETUNE_MIN_STEPS", "10000"))
 
+        eval_pool_interval = _env_int("GCN_PPO_HQ_EVAL_POOL_INTERVAL", 8)  # 每8个epoch评估一次相似测试网络
         search = PetriNetGCNPPOProHQ(
             petri_net=main_env["petri_net"],
             end=main_env["end"],
             pre=main_env["pre"],
             post=main_env["post"],
             min_delay_p=main_env["min_delay_p"],
-            env_pool=env_pool, 
+            env_pool=env_pool,
+            eval_env_pool=eval_env_pool,        # ★ 传入独立评估池，训练中监控泛化能力
+            eval_pool_interval=eval_pool_interval,  # ★ 评估频率
             max_train_steps=max_train_steps,
             verbose=True,
-            search_strategy = "greedy",
+            search_strategy="greedy",
             mixed_rollout=True,
-            envs_per_epoch = 4,
+            envs_per_epoch=4,
             # use_deadlock_controller = False,
         )
         print(
@@ -516,7 +524,9 @@ def main():
             "optimizer_state": search.optimizer.state_dict(),
             "best_train_makespan": search.best_train_makespan,
             "best_train_trans": search.best_train_trans,
-            "best_records": getattr(search, "best_records", {})
+            "best_records": getattr(search, "best_records", {}),
+            # ★ 新增：同时保存训练过程中池评估最优的快照，供后续分析使用
+            "best_pool_snapshot": getattr(search, "_best_snapshot", None),
         }
         os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
         torch.save(to_save, ckpt_path)
@@ -538,6 +548,8 @@ def main():
         out += "pool_success_rate:" + str(extra.get("poolSuccessRate", -1)) + "\n"
         out += "pool_avg_makespan:" + str(extra.get("poolAvgMakespan", -1)) + "\n"
         out += "pool_worst_makespan:" + str(extra.get("poolWorstMakespan", -1)) + "\n"
+        out += "eval_pool_success_rate:" + str(extra.get("evalPoolSuccessRate", -1)) + "\n"
+        out += "eval_pool_avg_makespan:" + str(extra.get("evalPoolAvgMakespan", -1)) + "\n"
         out += "il_warmstarted:" + ("1" if il_warmstarted else "0") + "\n"
         out += "il_warm_method:" + il_warm_method + "\n"
         out += "init_source:" + init_source + "\n"

@@ -106,6 +106,9 @@ class PetriNetGCNPPOPro(AbstractSearch):
         # 【新增】: 接收 max_residence_time
         max_residence_time: List[int] = None, 
         env_pool=None,
+        eval_env_pool=None,     # 独立的评估池（不参与训练，仅用于训练中监控泛化能力）
+        eval_pool_interval: int = 0,  # 每隔多少 epoch 评估一次 eval_env_pool（0 = 不评估）
+        weight_decay: float = 0.0,   # Adam L2 正则化系数，有助于减少过拟合
         **kwargs
     ):
         super().__init__()
@@ -190,7 +193,8 @@ class PetriNetGCNPPOPro(AbstractSearch):
             max_residence_time=self.max_residence_time,
             place_from_places=getattr(petri_net, "place_from_places", None),
         ).to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        self._weight_decay = weight_decay
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         
         self.buffer = RolloutBuffer()
         
@@ -201,6 +205,13 @@ class PetriNetGCNPPOPro(AbstractSearch):
         self.best_records = {}
         self.current_env_name = "default"
         self.best_records["default"] = {"makespan": 2**31 - 1, "trans": []}
+
+        # 独立评估池（结构相似但未见过的网络，用于训练中监控泛化能力）
+        self.eval_env_pool = eval_env_pool
+        self.eval_pool_interval = eval_pool_interval
+        # 最优模型快照（在所有训练网 pool_success_rate 最高时保存）
+        self._best_pool_score = -1.0
+        self._best_snapshot: Optional[Dict] = None
         
         self.deadlock_controller = None
         if use_deadlock_controller:
@@ -312,16 +323,31 @@ class PetriNetGCNPPOPro(AbstractSearch):
                 complexity_weight = 0.3 + 0.7 * complexity_ratio * adjusted_progress
 
             # 2. 困难度权重：评估表现差的环境获得更高权重
+            # 改进：不再只区分"到达/未到达"，而是基于相对最优解的改进空间动态计算
             env_record = self.best_records.get(env_name, {})
             env_makespan = env_record.get("makespan", 2**31 - 1)
             reached_goal = env_makespan < 2**31 - 1
 
             if reached_goal:
-                # 已到达目标：检查与最优解的差距
-                difficulty_weight = 0.5
+                # 已到达目标：根据与全局最优的相对差距计算权重
+                # 收集所有已到达目标的环境的 makespan，用于相对比较
+                all_makespans = [
+                    self.best_records.get(e.get("name", "default"), {}).get("makespan", 2**31 - 1)
+                    for e in self.env_pool
+                    if self.best_records.get(e.get("name", "default"), {}).get("makespan", 2**31 - 1) < 2**31 - 1
+                ]
+                if len(all_makespans) > 1:
+                    best_ms = min(all_makespans)
+                    worst_ms = max(all_makespans)
+                    ms_range = max(1.0, float(worst_ms - best_ms))
+                    # makespan 越差（越大），权重越高；归一化到 [0.5, 1.5]
+                    rel_difficulty = (env_makespan - best_ms) / ms_range
+                    difficulty_weight = 0.5 + rel_difficulty
+                else:
+                    difficulty_weight = 0.7  # 全部已达目标且无差异时，轻度降权
             else:
-                # 未到达目标：高优先级
-                difficulty_weight = 2.0
+                # 未到达目标：高优先级（训练后期加大惩罚以集中攻克难关）
+                difficulty_weight = 2.0 + 0.5 * progress  # 随训练深入逐渐加权
 
             # 3. 覆盖度权重：访问少的环境获得更高权重
             visits = self.env_visit_counts.get(env_name, 0)
@@ -460,6 +486,19 @@ class PetriNetGCNPPOPro(AbstractSearch):
             # 可学习参数全部在 lambda_p/lambda_t 空间，与 P/T 规模无关；
             # 拓扑相关 buffer（pre/post/degree/transition_seed）随新模型初始化自动更新。
             old_state = {k: v.cpu() for k, v in self.model.state_dict().items()}
+            # 保存参数形状用于优化器状态迁移的兼容性检查
+            old_param_shapes = {n: tuple(p.shape) for n, p in self.model.named_parameters()}
+
+            # 保存优化器当前状态（动量、方差估计等），用于跨环境迁移
+            saved_opt_state: Optional[dict] = None
+            current_lr = self.initial_lr
+            if hasattr(self, "optimizer") and self.optimizer.param_groups:
+                try:
+                    saved_opt_state = self.optimizer.state_dict()
+                    current_lr = self.optimizer.param_groups[0]["lr"]
+                except Exception:
+                    pass
+
             self.model = PetriNetGCNActorCritic(
                 self.pre,
                 self.post,
@@ -474,6 +513,27 @@ class PetriNetGCNPPOPro(AbstractSearch):
                 place_from_places=getattr(self.petri_net, "place_from_places", None),
             ).to(self.device)
             load_compatible_state(self.model, old_state)
+
+            # ★ 关键修复：重建优化器以绑定新模型参数。
+            # 原 self.optimizer 仍指向旧模型参数，switch 后 optimizer.step() 只会更新
+            # 已被丢弃的旧参数，新模型实际上从未被训练——这是多网训练失效的根本原因。
+            self.optimizer = torch.optim.Adam(
+                self.model.parameters(),
+                lr=current_lr,
+                weight_decay=getattr(self, "_weight_decay", 0.0),
+            )
+            # 若参数形状未变（lambda_p/lambda_t 固定时通常满足），迁移优化器动量状态，
+            # 避免每次切换环境都从零开始积累梯度统计量。
+            if saved_opt_state is not None:
+                new_param_shapes = {n: tuple(p.shape) for n, p in self.model.named_parameters()}
+                if new_param_shapes == old_param_shapes:
+                    try:
+                        self.optimizer.load_state_dict(saved_opt_state)
+                        # 确保 lr 保持为切换前的当前值（调度器可能已调整过）
+                        for pg in self.optimizer.param_groups:
+                            pg["lr"] = current_lr
+                    except Exception:
+                        pass  # 迁移失败时使用全新优化器状态，不影响正确性
         
         if hasattr(self, "deadlock_controller") and self.use_deadlock_controller:
             self.deadlock_controller = DeadlockController(
@@ -586,34 +646,42 @@ class PetriNetGCNPPOPro(AbstractSearch):
         time_cost = delta_t / self.reward_time_scale
         
         repeat_penalty = seen_count.get(self._state_key(next_marking), 0) * self.reward_repeat_penalty  # 重复访问状态的惩罚
-        
-        reward = -time_cost + self.reward_progress_weight * progress - repeat_penalty
+
+        # ★ 修复：将步骤奖励与目标奖励分两层计算。
+        # 原代码将 reward_goal_bonus(1500) 加入后再整体 clip 到 [-100,100]，
+        # 导致目标奖励完全被截断，智能体无法区分"到达目标"与"高步骤奖励"，
+        # 也无法感知 makespan 优化信号——这是模型无法收敛的重要原因之一。
+        # 修复方案：仅对步骤奖励做保守裁剪，目标 bonus 另行叠加，不参与裁剪。
+        step_reward = -time_cost + self.reward_progress_weight * progress - repeat_penalty
         
         if deadlock:
-            reward -= self.reward_deadlock_penalty
-            
+            step_reward -= self.reward_deadlock_penalty
+
+        # 步骤奖励限幅（防止时间/重复惩罚的极端值破坏梯度稳定性）
+        step_reward = max(-self.reward_deadlock_penalty, min(50.0, step_reward))
+
+        goal_bonus = 0.0
         if done:
             makespan = next_marking.get_prefix()
             env_best = self.best_records[self.current_env_name]["makespan"]
             
             if env_best == 2 ** 31 - 1:
-                # 第一次到达目标状态,奖励额外奖励
-                reward += self.reward_goal_bonus
-                self._log(f"    🎯 [{self.current_env_name} First Goal Reached] Makespan: {makespan}")
+                # 第一次到达目标状态
+                goal_bonus = self.reward_goal_bonus
+                self._log(f"    [Goal] [{self.current_env_name}] First Goal Reached! Makespan: {makespan}")
             else:
-                # 非第一次到达目标状态,根据改进或恶化来奖励奖励
+                # 非第一次到达目标状态，根据改进或恶化给予差异化奖励
                 improvement = env_best - makespan
                 if improvement > 0:  # 改进
-                    extra_bonus = (float(improvement) / self.reward_time_scale) * 100.0  # 给予额外奖励
-                    reward += self.reward_goal_bonus + min(300.0, extra_bonus)
-                    self._log(f"    🌟 [{self.current_env_name} New Best Record!] Makespan: {makespan} (Improved by {improvement})")
-                else:  # 恶化
+                    extra_bonus = (float(improvement) / self.reward_time_scale) * 100.0
+                    goal_bonus = self.reward_goal_bonus + min(self.reward_goal_bonus * 2.0, extra_bonus)
+                    self._log(f"    [Goal] [{self.current_env_name}] New Best! Makespan: {makespan} (improved by {improvement})")
+                else:  # 次优解，给予降级奖励
                     degradation = makespan - env_best
-                    penalty_for_worse = (float(degradation) / self.reward_time_scale) * 50.0  # 给予少量的奖励
-                    final_goal_reward = max(self.reward_goal_bonus * 0.2, self.reward_goal_bonus - penalty_for_worse)
-                    reward += final_goal_reward
-                
-        reward = max(-100.0, min(100.0, reward))  # 奖励范围限制
+                    penalty_for_worse = (float(degradation) / self.reward_time_scale) * 50.0
+                    goal_bonus = max(self.reward_goal_bonus * 0.2, self.reward_goal_bonus - penalty_for_worse)
+
+        reward = step_reward + goal_bonus
         return next_marking, reward, done, deadlock
 
     def _collect_rollouts(self, num_steps: int):
@@ -1228,12 +1296,43 @@ class PetriNetGCNPPOPro(AbstractSearch):
                         f" | Pool Avg: {pool_avg_show}"
                         f" | Pool Worst: {pool_worst_show}"
                     )
-            
+                    # ★ 最优模型快照：当训练池整体成功率创新高时保存模型权重。
+                    # 防止训练后期过拟合导致最终模型性能退化。
+                    cur_score = pool_metrics["success_rate"] * 1000.0 - (
+                        pool_metrics["avg_makespan"] if pool_metrics["avg_makespan"] >= 0 else 1e9
+                    ) * 0.001
+                    if cur_score > self._best_pool_score:
+                        self._best_pool_score = cur_score
+                        self._best_snapshot = {
+                            "actor_state": {k: v.detach().cpu() for k, v in self.model.actor_net.state_dict().items()},
+                            "critic_state": {k: v.detach().cpu() for k, v in self.model.value_head.state_dict().items()},
+                            "epoch": epoch_idx,
+                            "total_steps": total_steps,
+                            "pool_success_rate": pool_metrics["success_rate"],
+                            "pool_avg_makespan": pool_metrics["avg_makespan"],
+                        }
+                        self._log(f"    [Snapshot] New best pool snapshot saved (SR={pool_metrics['success_rate']:.2f}, Avg={pool_avg_show})")
+
+            # ★ 独立评估池（eval_env_pool）监控：定期对结构相似的测试网络进行贪婪评估，
+            # 跟踪泛化能力的变化趋势，提前发现过拟合。
+            eval_pool_text = ""
+            if self.eval_env_pool and self.eval_pool_interval > 0:
+                need_eval_pool = epoch_idx % self.eval_pool_interval == 0 or total_steps >= self.max_train_steps
+                if need_eval_pool:
+                    eval_metrics = self._evaluate_pool(self.eval_env_pool)
+                    self.extra_info["evalPoolSuccessRate"] = eval_metrics["success_rate"]
+                    self.extra_info["evalPoolAvgMakespan"] = eval_metrics["avg_makespan"]
+                    eval_avg_show = int(eval_metrics["avg_makespan"]) if eval_metrics["avg_makespan"] >= 0 else "Fail"
+                    eval_pool_text = (
+                        f" | EvalPool SR: {eval_metrics['success_rate']:.2f}"
+                        f" | EvalPool Avg: {eval_avg_show}"
+                    )
+
             # 每epoch打印一次日志
             self._log(
                 f"Env: {self.current_env_name} | Ep {epoch_idx:03d} | Steps: {total_steps}/{self.max_train_steps} | "
                 f"Avg R: {avg_reward:6.1f} | Eval: {eval_show} | Best: {best_show} | "
-                f"a_loss: {a_loss:5.2f} c_loss: {c_loss:5.2f}{pool_text}"
+                f"a_loss: {a_loss:5.2f} c_loss: {c_loss:5.2f}{pool_text}{eval_pool_text}"
             )
 
         self.is_trained = True
@@ -1243,8 +1342,24 @@ class PetriNetGCNPPOPro(AbstractSearch):
                 if env.get("name") == saved_env_name:
                     self.switch_environment(env)
                     break
-        
-        
+
+        # ★ 恢复最优快照：若训练中途拍摄了更好的模型，用它替代最终 epoch 的模型。
+        # 这可以对抗训练后期因过拟合导致的性能退化。
+        if self._best_snapshot is not None:
+            snap = self._best_snapshot
+            snap_sr = snap.get("pool_success_rate", 0.0)
+            snap_ep = snap.get("epoch", 0)
+            snap_steps = snap.get("total_steps", 0)
+            self._log(
+                f"[Snapshot] Restoring best snapshot from epoch {snap_ep} "
+                f"(steps={snap_steps}, pool_SR={snap_sr:.2f}) for inference."
+            )
+            try:
+                load_compatible_state(self.model.actor_net, snap["actor_state"])
+                load_compatible_state(self.model.value_head, snap["critic_state"])
+            except Exception as e:
+                self._log(f"[Snapshot] Restore failed: {e}, using final model.")
+
         env_record = getattr(self, "best_records", {}).get(self.current_env_name, {})
         self.best_train_makespan = env_record.get("makespan", 2**31-1)
         self.best_train_trans = env_record.get("trans", [])
