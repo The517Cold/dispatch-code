@@ -1,0 +1,392 @@
+[
+    {
+        "file_name": "1-1-4.txt",
+        "file_path": "d:\\dispatch_code\\BC+DAgger+PPO\\new_job\\python_port\\resources\\1-1-4.txt",
+        "status": "Processed",
+        "il_result": {
+            "method": "IL",
+            "success": true,
+            "makespan": 0,
+            "trans_count": 0,
+            "trans_sequence": "",
+            "steps": 0,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "il_rl_result": {
+            "method": "IL+RL",
+            "success": true,
+            "makespan": 0,
+            "trans_count": 0,
+            "trans_sequence": "",
+            "steps": 0,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "optimal_method": "Tie (Identical Performance)",
+        "optimal_metrics": {
+            "makespan": 0,
+            "trans_count": 0
+        },
+        "error_msg": null
+    },
+    {
+        "file_name": "1-1-9.txt",
+        "file_path": "d:\\dispatch_code\\BC+DAgger+PPO\\new_job\\python_port\\resources\\1-1-9.txt",
+        "status": "Processed",
+        "il_result": {
+            "method": "IL",
+            "success": true,
+            "makespan": 7393,
+            "trans_count": 39,
+            "trans_sequence": "2->21->2->22->2->25->11->21->26->2->23->22->26->24->25->10->20->13->6->19->7->5->7->9->15->20->1->6->7->9->1->12->20->6->7->9->1->9->1",
+            "steps": 39,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "il_rl_result": {
+            "method": "IL+RL",
+            "success": true,
+            "makespan": 7447,
+            "trans_count": 39,
+            "trans_sequence": "2->22->2->21->2->26->22->11->2->25->21->23->26->24->25->10->20->6->7->13->20->6->7->15->20->9->1->6->7->9->1->9->1->12->20->6->7->9->1",
+            "steps": 39,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "optimal_method": "IL",
+        "optimal_metrics": {
+            "makespan": 7393,
+            "trans_count": 39
+        },
+        "error_msg": null
+    },
+    {
+        "file_name": "1-1-11.txt",
+        "file_path": "d:\\dispatch_code\\BC+DAgger+PPO\\new_job\\python_port\\resources\\1-1-11.txt",
+        "status": "Processed",
+        "il_result": {
+            "method": "IL",
+            "success": true,
+            "makespan": 14147,
+            "trans_count": 91,
+            "trans_sequence": "2->22->2->21->2->25->11->21->26->2->23->22->2->25->24->21->26->2->22->2->10->17->14->3->7->2->18->16->4->7->2->17->3->7->9->1->2->10->18->14->4->7->9->1->9->17->1->16->5->7->2->18->21->6->7->9->1->9->1->9->1->10->17->5->14->7->20->6->7->15->19->5->7->9->1->9->1->9->1->12->19->5->7->13->20->9->1->6->7->9->1",
+            "steps": 91,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "il_rl_result": {
+            "method": "IL+RL",
+            "success": true,
+            "makespan": 14417,
+            "trans_count": 91,
+            "trans_sequence": "2->22->2->21->2->25->21->11->26->23->2->22->25->24->2->21->2->26->22->2->10->17->14->3->7->2->18->16->4->7->2->17->3->7->9->1->9->1->9->1->2->10->18->4->7->2->14->17->16->3->7->9->1->18->6->7->9->1->9->1->10->20->25->6->7->9->1->14->20->6->7->15->20->6->7->9->1->9->1->12->20->6->7->9->1->13->20->6->7->9->1",
+            "steps": 91,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "optimal_method": "IL",
+        "optimal_metrics": {
+            "makespan": 14147,
+            "trans_count": 91
+        },
+        "error_msg": null
+    },
+    {
+        "file_name": "1-2-4.txt",
+        "file_path": "d:\\dispatch_code\\BC+DAgger+PPO\\new_job\\python_port\\resources\\1-2-4.txt",
+        "status": "Processed",
+        "il_result": {
+            "method": "IL",
+            "success": true,
+            "makespan": 7513,
+            "trans_count": 39,
+            "trans_sequence": "2->21->2->22->2->26->11->22->25->2->24->21->26->23->25->10->20->6->15->7->19->5->13->7->20->6->7->9->1->9->1->9->1->12->20->6->7->9->1",
+            "steps": 39,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "il_rl_result": {
+            "method": "IL+RL",
+            "success": true,
+            "makespan": 7945,
+            "trans_count": 39,
+            "trans_sequence": "2->21->2->22->2->25->21->24->2->26->22->11->25->23->26->14->19->5->15->7->20->6->7->12->19->5->7->9->1->9->1->9->1->13->19->5->7->9->1",
+            "steps": 39,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "optimal_method": "IL",
+        "optimal_metrics": {
+            "makespan": 7513,
+            "trans_count": 39
+        },
+        "error_msg": null
+    },
+    {
+        "file_name": "1-1-14.txt",
+        "file_path": "d:\\dispatch_code\\BC+DAgger+PPO\\new_job\\python_port\\resources\\1-1-14.txt",
+        "status": "Processed",
+        "il_result": {
+            "method": "IL",
+            "success": true,
+            "makespan": 17032,
+            "trans_count": 111,
+            "trans_sequence": "2->22->2->21->2->25->11->21->26->2->23->22->2->25->24->21->26->2->22->2->10->17->14->3->7->2->18->16->4->7->2->17->3->7->9->1->2->10->18->14->4->7->9->1->9->17->1->16->2->3->18->7->2->4->7->9->1->2->10->17->14->3->7->9->1->9->18->1->2->16->4->17->7->5->7->9->1->9->1->9->1->10->18->6->14->7->19->5->7->15->20->6->7->9->1->9->1->9->1->12->20->6->7->13->19->9->1->5->7->9->1",
+            "steps": 111,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "il_rl_result": {
+            "method": "IL+RL",
+            "success": true,
+            "makespan": 17182,
+            "trans_count": 112,
+            "trans_sequence": "2->22->2->21->2->26->22->11->25->23->2->21->26->24->2->22->2->25->21->2->10->18->14->4->7->2->17->16->3->7->2->18->4->7->9->1->9->1->9->1->2->10->17->3->14->7->2->18->4->7->16->2->17->3->7->9->1->9->1->9->1->2->10->18->4->7->2->14->17->3->7->16->9->1->18->6->7->9->1->9->1->10->20->25->6->7->9->1->14->20->6->7->15->20->6->7->9->1->9->1->12->20->6->7->9->1->13->20->6->7->9->1",
+            "steps": 112,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "optimal_method": "IL",
+        "optimal_metrics": {
+            "makespan": 17032,
+            "trans_count": 111
+        },
+        "error_msg": null
+    },
+    {
+        "file_name": "1-2-11.txt",
+        "file_path": "d:\\dispatch_code\\BC+DAgger+PPO\\new_job\\python_port\\resources\\1-2-11.txt",
+        "status": "Processed",
+        "il_result": {
+            "method": "IL",
+            "success": false,
+            "makespan": 8491,
+            "trans_count": 60,
+            "trans_sequence": "2->21->2->22->2->26->11->22->25->2->23->21->2->26->24->22->25->2->21->2->10->18->14->4->7->2->17->16->3->7->2->18->4->7->9->1->2->10->17->14->3->7->9->1->18->2->16->4->7->9->17->1->5->7->9->1->9->1->9->1",
+            "steps": 60,
+            "error": null,
+            "stop_reason": "deadlock",
+            "deadlock_reason": "no_enabled_transitions"
+        },
+        "il_rl_result": {
+            "method": "IL+RL",
+            "success": false,
+            "makespan": 8408,
+            "trans_count": 47,
+            "trans_sequence": "2->22->2->21->2->26->22->23->25->2->21->11->2->26->22->24->2->25->21->2->16->18->14->4->7->2->17->10->3->7->2->18->4->7->9->1->2->14->17->16->3->7->2->18->10->4->17",
+            "steps": 47,
+            "error": null,
+            "stop_reason": "deadlock",
+            "deadlock_reason": "no_enabled_transitions"
+        },
+        "optimal_method": "Tie (Both Failed)",
+        "optimal_metrics": null,
+        "error_msg": null
+    },
+    {
+        "file_name": "1-2-9.txt",
+        "file_path": "d:\\dispatch_code\\BC+DAgger+PPO\\new_job\\python_port\\resources\\1-2-9.txt",
+        "status": "Processed",
+        "il_result": {
+            "method": "IL",
+            "success": true,
+            "makespan": 12583,
+            "trans_count": 76,
+            "trans_sequence": "2->22->2->21->2->25->23->21->26->2->11->22->2->25->24->21->26->2->22->2->16->17->14->3->7->2->18->10->4->7->2->17->3->7->9->1->9->1->9->1->10->18->16->6->7->17->14->5->7->20->6->7->9->1->9->1->9->1->12->20->6->7->15->19->5->7->13->20->9->1->6->7->9->1->9->1",
+            "steps": 76,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "il_rl_result": {
+            "method": "IL+RL",
+            "success": true,
+            "makespan": 15162,
+            "trans_count": 78,
+            "trans_sequence": "2->21->2->22->2->26->22->23->2->25->21->24->2->26->22->11->2->25->21->2->10->18->14->4->7->2->17->16->3->7->2->18->4->7->9->1->9->1->9->1->16->17->10->5->7->19->5->7->26->14->9->20->1->6->7->9->1->9->1->13->19->5->7->15->20->6->7->12->19->5->7->9->1->9->1->28->9->1",
+            "steps": 78,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "optimal_method": "IL",
+        "optimal_metrics": {
+            "makespan": 12583,
+            "trans_count": 76
+        },
+        "error_msg": null
+    },
+    {
+        "file_name": "1-3-4.txt",
+        "file_path": "d:\\dispatch_code\\BC+DAgger+PPO\\new_job\\python_port\\resources\\1-3-4.txt",
+        "status": "Processed",
+        "il_result": {
+            "method": "IL",
+            "success": true,
+            "makespan": 13163,
+            "trans_count": 35,
+            "trans_sequence": "2->17->2->18->2->19->11->17->20->2->18->10->13->5->7->9->1->10->14->6->7->9->1->10->15->5->7->12->15->5->7->9->1->9->1",
+            "steps": 35,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "il_rl_result": {
+            "method": "IL+RL",
+            "success": true,
+            "makespan": 13337,
+            "trans_count": 36,
+            "trans_sequence": "2->17->2->18->2->20->18->11->2->19->17->10->14->6->7->9->1->10->16->19->6->7->9->1->10->16->6->7->9->1->12->16->6->7->9->1",
+            "steps": 36,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "optimal_method": "IL",
+        "optimal_metrics": {
+            "makespan": 13163,
+            "trans_count": 35
+        },
+        "error_msg": null
+    },
+    {
+        "file_name": "1-2-14.txt",
+        "file_path": "d:\\dispatch_code\\BC+DAgger+PPO\\new_job\\python_port\\resources\\1-2-14.txt",
+        "status": "Processed",
+        "il_result": {
+            "method": "IL",
+            "success": false,
+            "makespan": 9407,
+            "trans_count": 61,
+            "trans_sequence": "2->21->2->22->2->25->24->21->26->2->23->22->2->25->11->21->26->2->22->2->10->17->16->3->7->2->18->14->4->7->2->17->3->7->9->1->2->16->18->10->4->7->9->1->17->9->14->0->3->18->7->2->4->7->9->1->9->1->9->1->2",
+            "steps": 61,
+            "error": null,
+            "stop_reason": "deadlock",
+            "deadlock_reason": "no_enabled_transitions"
+        },
+        "il_rl_result": {
+            "method": "IL+RL",
+            "success": false,
+            "makespan": 9282,
+            "trans_count": 62,
+            "trans_sequence": "2->21->2->22->2->26->22->11->25->23->2->21->26->2->22->24->2->25->21->2->14->18->10->4->7->2->17->16->3->7->2->17->3->7->9->1->9->1->2->10->18->14->4->7->9->1->17->2->16->3->7->2->18->4->7->9->1->9->1->9->1->2",
+            "steps": 62,
+            "error": null,
+            "stop_reason": "deadlock",
+            "deadlock_reason": "no_enabled_transitions"
+        },
+        "optimal_method": "Tie (Both Failed)",
+        "optimal_metrics": null,
+        "error_msg": null
+    },
+    {
+        "file_name": "1-3-9.txt",
+        "file_path": "d:\\dispatch_code\\BC+DAgger+PPO\\new_job\\python_port\\resources\\1-3-9.txt",
+        "status": "Processed",
+        "il_result": {
+            "method": "IL",
+            "success": true,
+            "makespan": 27588,
+            "trans_count": 70,
+            "trans_sequence": "2->17->2->18->2->19->11->17->20->2->18->2->10->13->3->7->2->10->13->10->3->7->2->14->4->7->9->1->2->10->13->10->3->7->9->1->2->14->4->7->9->1->9->1->9->1->10->13->5->7->9->1->10->14->6->7->9->1->10->15->5->7->12->15->5->7->9->1->9->1",
+            "steps": 70,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "il_rl_result": {
+            "method": "IL+RL",
+            "success": true,
+            "makespan": 27588,
+            "trans_count": 71,
+            "trans_sequence": "2->17->2->18->2->19->11->17->20->2->18->2->10->13->3->7->2->10->14->4->7->9->1->2->10->13->3->7->9->1->2->10->14->4->7->2->10->13->3->7->9->1->9->1->9->1->10->14->6->7->9->1->10->16->19->6->7->9->1->10->16->6->7->9->1->12->16->6->7->9->1",
+            "steps": 71,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "optimal_method": "IL",
+        "optimal_metrics": {
+            "makespan": 27588,
+            "trans_count": 70
+        },
+        "error_msg": null
+    },
+    {
+        "file_name": "1-3-11.txt",
+        "file_path": "d:\\dispatch_code\\BC+DAgger+PPO\\new_job\\python_port\\resources\\1-3-11.txt",
+        "status": "Processed",
+        "il_result": {
+            "method": "IL",
+            "success": true,
+            "makespan": 33478,
+            "trans_count": 84,
+            "trans_sequence": "2->18->2->17->2->19->11->17->20->2->18->2->10->13->3->7->2->10->13->10->3->7->2->14->4->7->9->1->2->10->13->10->3->7->9->1->2->14->4->7->9->1->2->10->13->10->3->7->9->1->2->14->4->7->9->1->9->1->9->1->10->13->5->7->9->1->10->14->6->7->9->1->10->15->5->7->12->15->5->7->9->1->9->1",
+            "steps": 84,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "il_rl_result": {
+            "method": "IL+RL",
+            "success": true,
+            "makespan": 33358,
+            "trans_count": 85,
+            "trans_sequence": "2->18->2->17->2->20->11->18->19->2->17->2->10->14->4->7->2->10->13->3->7->9->1->2->10->14->4->7->9->1->2->10->13->3->7->9->1->2->10->14->4->7->9->1->9->1->2->10->13->3->7->2->10->14->4->7->9->1->9->1->10->13->5->7->9->1->10->15->20->5->7->9->1->10->15->5->7->9->1->12->15->5->7->9->1",
+            "steps": 85,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "optimal_method": "IL+RL",
+        "optimal_metrics": {
+            "makespan": 33358,
+            "trans_count": 85
+        },
+        "error_msg": null
+    },
+    {
+        "file_name": "1-3-14.txt",
+        "file_path": "d:\\dispatch_code\\BC+DAgger+PPO\\new_job\\python_port\\resources\\1-3-14.txt",
+        "status": "Processed",
+        "il_result": {
+            "method": "IL",
+            "success": true,
+            "makespan": 42133,
+            "trans_count": 105,
+            "trans_sequence": "2->17->2->18->2->20->11->18->19->2->17->2->10->14->4->7->2->10->14->10->4->7->2->13->3->7->9->1->2->10->14->10->4->7->9->1->2->13->3->7->9->1->2->10->14->10->4->7->9->1->2->13->3->7->9->1->2->10->14->10->4->7->9->1->2->13->3->7->9->1->2->10->14->10->4->7->9->1->13->9->1->5->7->9->1->9->1->10->14->6->7->9->1->10->15->5->7->12->15->5->7->9->1->9->1",
+            "steps": 105,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "il_rl_result": {
+            "method": "IL+RL",
+            "success": true,
+            "makespan": 42187,
+            "trans_count": 106,
+            "trans_sequence": "2->17->2->18->2->20->18->11->19->2->17->2->10->14->4->7->2->10->13->3->7->9->1->2->10->14->4->7->9->1->2->10->13->3->7->9->1->2->10->14->4->7->9->1->2->10->13->3->7->9->1->2->10->14->4->7->9->1->2->10->13->3->7->9->1->9->1->2->10->14->4->7->2->10->13->3->7->9->1->9->1->10->14->6->7->9->1->10->16->19->6->7->9->1->10->16->6->7->9->1->12->16->6->7->9->1",
+            "steps": 106,
+            "error": null,
+            "stop_reason": "",
+            "deadlock_reason": ""
+        },
+        "optimal_method": "IL",
+        "optimal_metrics": {
+            "makespan": 42133,
+            "trans_count": 105
+        },
+        "error_msg": null
+    }
+]

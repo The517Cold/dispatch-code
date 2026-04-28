@@ -1,0 +1,3 @@
+# dagger_lite_pretrain: 场景内多轮循环训练
+# nets_total:142
+[DAGGER] net=1-1-11 stage=seed_data begin index=1/142

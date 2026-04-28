@@ -1,0 +1,47 @@
+GCN-DQN enhanced HQ mode: hq-full
+input_subdir=test net_file=1-2-13.txt
+schedule train_episodes=200 min_steps=68 max_steps=164 inference_max_steps=182 step_source=expert heuristic_min_steps=123 heuristic_max_steps=762 rollout_count=45 places=33 trans=30 constrained_places=3 scene_id=1
+residence_constraints=4:1600,26:1600,29:1600
+goal_policy eval_rollouts=8 min_success=0.7 extra_train_episodes=120 reward_scaling=1 reward_time_scale=1000.0 reward_clip=1 reward_clip_abs=20.0 huber_loss=1 huber_beta=1.0 rl_verbose=1 rl_log_interval=5 bc_warm_scales=net:0.4,scene:0.65,global:0.85 bc_warm_eps_init=net:0.2,scene:0.35,global:0.6 rl_epsilon_init=0.35
+bc_bridge warm_start=1 scene_id=1 planned_source=scene bc_ckpt_path=c:\Users\jicai\Desktop\new_job\python_port\checkpoints\bc_scene_1.pt bc_result_path=c:\Users\jicai\Desktop\new_job\python_port\results\bc_scene_1_result.txt expert_steps=91 rl_epsilon_init=0.35 expert_step_scale=2.0 inference_max_steps=182
+checkpoint_loaded=1
+checkpoint_mode=exact checkpoint_score=0.0
+finetune_on_similar=1
+bc_warm_started=0 bc_warm_start_source=none bc_warm_scale=1.0
+finetune_schedule train_episodes=200 extra_train_episodes=120 base_train_episodes=200 base_extra_train_episodes=120 inference_max_steps=182
+train_plan=skip_train_use_loaded_checkpoint mode=exact
+elapsed:323.108770s
+trans_count:115
+trans_sequence:2->22->2->21->2->26->11->22->25->2->24->21->2->26->23->22->25->10->19->15->5->7->2->18->14->4->7->19->5->7->26->2->21->9->0->22->9->1->9->24->1->25->10->19->5->7->2->13->19->26->3->23->7->9->0->22->25->9->16->1->19->5->7->9->1->12->19->5->7->13->19->5->8->0->15->21->18->9->0->4->7->9->0->27->11->26->22->28->23->26->29->24->25->10->20->6->7->13->20->9->1->6->7->15->20->6->8->1->12->20->6->8->1->9->1
+makespan:19292
+reach_goal:True
+goal_distance:0
+train_steps:7734
+best_train_makespan:29621
+best_train_trans_count:119
+avg_loss:1.3633544780069335
+train_success_rate:None
+rollout_success_rate:None
+replay_success_rate:None
+extra_train_episodes:None
+inference_max_steps:182
+scene_id:1
+step_reference_source:expert
+heuristic_min_steps:123
+heuristic_max_steps:762
+bc_warm_started:False
+bc_warm_start_source:none
+bc_warm_scale:1.0
+rl_epsilon_init:0.35
+base_train_episodes:200
+base_extra_train_episodes:120
+bc_checkpoint_path:c:\Users\jicai\Desktop\new_job\python_port\checkpoints\bc_scene_1.pt
+bc_result_path:c:\Users\jicai\Desktop\new_job\python_port\results\bc_scene_1_result.txt
+bc_expert_steps:91
+warm_start_infer_elapsed:0.000000s
+warm_start_infer_trans_count:0
+warm_start_infer_trans_sequence:
+warm_start_infer_makespan:-1
+warm_start_infer_reach_goal:False
+warm_start_infer_goal_distance:-1
+checkpoint_path:c:\Users\jicai\Desktop\new_job\python_port\checkpoints\gcn_dqn_enhanced_hq_1-2-13_8626256e76a1ec5ee65f486725d538e065864d7c.pt

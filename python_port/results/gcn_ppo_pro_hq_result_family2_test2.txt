@@ -1,0 +1,11 @@
+ERROR
+Traceback (most recent call last):
+  File "d:\dispatch_code\BC+DAgger+PPO\new_job\python_port\train_ppo_3.py", line 375, in main
+    result = search.search()
+  File "d:\dispatch_code\BC+DAgger+PPO\new_job\python_port\petri_gcn_ppo_4_1.py", line 841, in search
+    self.train_model()
+  File "d:\dispatch_code\BC+DAgger+PPO\new_job\python_port\petri_gcn_ppo_4_1.py", line 692, in train_model
+    steps_collected, ep_rewards, ep_makespans = self._collect_rollouts(self.steps_per_epoch)  # 收集经验,走steps_per_epoch步
+  File "d:\dispatch_code\BC+DAgger+PPO\new_job\python_port\petri_gcn_ppo_4_1.py", line 496, in _collect_rollouts
+    self.buffer.states.append(state_tensor)
+NameError: name 'state_tensor' is not defined

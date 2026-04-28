@@ -1,0 +1,15 @@
+GCN-DQN enhanced HQ mode: hq-full
+input_subdir=test net_file=1-2-13.txt
+schedule train_episodes=200 min_steps=123 max_steps=762 inference_max_steps=762 step_source=heuristic heuristic_min_steps=123 heuristic_max_steps=762 rollout_count=45 places=33 trans=30 constrained_places=3 scene_id=1
+residence_constraints=4:1600,26:1600,29:1600
+goal_policy eval_rollouts=8 min_success=0.7 extra_train_episodes=120 reward_scaling=1 reward_time_scale=1000.0 reward_clip=1 reward_clip_abs=20.0 huber_loss=1 huber_beta=1.0 rl_verbose=1 rl_log_interval=5 controller_representation=1 bc_warm_scales=net:0.4,scene:0.65,global:0.85 bc_warm_eps_init=net:0.2,scene:0.35,global:0.6 rl_epsilon_init=0.35
+bc_bridge warm_start=1 scene_id=1 planned_source=scene bc_ckpt_path=c:\Users\jicai\Desktop\new_job\python_port\checkpoints\bc_scene_1.pt bc_result_path=c:\Users\jicai\Desktop\new_job\python_port\results\bc_scene_1_result.txt expert_steps=0 rl_epsilon_init=0.35 expert_step_scale=2.0 inference_max_steps=762
+checkpoint_loaded=0
+checkpoint_mode=none checkpoint_score=-1.0
+finetune_on_similar=1
+bc_warm_started=1 bc_warm_start_source=scene bc_warm_scale=0.65
+finetune_schedule train_episodes=130 extra_train_episodes=78 base_train_episodes=200 base_extra_train_episodes=120 inference_max_steps=762
+train_plan=run_train_from_bc_warm_start
+warm_start_inference=run_before_finetune
+warm_start_infer reach_goal=True goal_distance=0 makespan=19292 trans_count=115 elapsed=259.908588s
+warm_start_infer_trans_sequence=2->22->2->21->2->26->11->22->25->2->23->21->2->26->24->22->25->10->19->13->5->7->2->18->16->4->7->19->5->7->26->2->21->9->0->22->9->1->9->23->1->25->10->19->5->7->2->15->19->26->3->24->7->9->0->22->25->9->14->1->19->5->7->9->1->12->19->5->7->15->19->5->8->0->13->18->21->9->0->4->7->9->0->27->11->25->21->29->24->25->28->23->26->10->20->6->7->15->20->9->1->6->7->13->20->6->8->1->12->20->6->8->1->9->1

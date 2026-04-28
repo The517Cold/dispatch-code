@@ -1,0 +1,130 @@
+ppo_scene_train scene_id=1
+inline_env_overrides=none
+ppo_variant=enhanced
+nets=['1-1-11', '1-1-14', '1-1-4', '1-1-9', '1-2-11', '1-2-14', '1-2-4', '1-2-9', '1-3-11', '1-3-14', '1-3-4', '1-3-9', '1-4-11', '1-4-14', '1-4-4', '1-4-9', '1-5-11', '1-5-14', '1-5-4', '1-5-9']
+schedule scene_rounds=3 train_iterations_per_net=8 extra_train_iterations_per_net=4 rollout_episodes_per_iter=12 ppo_update_epochs=6 controller_representation=1
+shuffle seed=42 policy=random_each_round
+init source=bc_scene il_mode=auto il_warm_started_once=1 il_checkpoint_path=d:\dispatch_code\BC+DAgger+PPO\new_job\python_port\checkpoints\bc_scene_1.pt
+scene_round_begin round=1/3 order=['1-5-9', '1-2-14', '1-4-4', '1-2-11', '1-3-14', '1-4-14', '1-4-9', '1-5-4', '1-2-4', '1-4-11', '1-5-14', '1-3-4', '1-1-14', '1-3-9', '1-1-4', '1-5-11', '1-2-9', '1-3-11', '1-1-11', '1-1-9']
+net_begin round=1 index=1/20 net=1-5-9 min_steps=138 max_steps=900 inference_max_steps=900 step_source=heuristic places=42 trans=48 constrained_places=19
+net_done round=1 net=1-5-9 reach_goal=False makespan=6602 trans_count=19 best_train_makespan=-1 elapsed=94.117068s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=1 index=2/20 net=1-2-14 min_steps=123 max_steps=762 inference_max_steps=762 step_source=heuristic places=33 trans=30 constrained_places=3
+net_done round=1 net=1-2-14 reach_goal=True makespan=23565 trans_count=129 best_train_makespan=23565 elapsed=150.268879s inference_stop_reason= inference_deadlock_reason=
+net_begin round=1 index=3/20 net=1-4-4 min_steps=120 max_steps=686 inference_max_steps=686 step_source=heuristic places=25 trans=22 constrained_places=1
+net_done round=1 net=1-4-4 reach_goal=False makespan=7596 trans_count=24 best_train_makespan=-1 elapsed=64.936499s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=1 index=4/20 net=1-2-11 min_steps=123 max_steps=762 inference_max_steps=762 step_source=heuristic places=33 trans=30 constrained_places=3
+net_done round=1 net=1-2-11 reach_goal=False makespan=7422 trans_count=42 best_train_makespan=-1 elapsed=160.089491s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=1 index=5/20 net=1-3-14 min_steps=120 max_steps=670 inference_max_steps=670 step_source=heuristic places=23 trans=21 constrained_places=1
+net_done round=1 net=1-3-14 reach_goal=True makespan=42013 trans_count=99 best_train_makespan=42013 elapsed=138.222496s inference_stop_reason= inference_deadlock_reason=
+net_begin round=1 index=6/20 net=1-4-14 min_steps=120 max_steps=686 inference_max_steps=686 step_source=heuristic places=25 trans=22 constrained_places=1
+net_done round=1 net=1-4-14 reach_goal=False makespan=7806 trans_count=26 best_train_makespan=-1 elapsed=70.544508s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=1 index=7/20 net=1-4-9 min_steps=120 max_steps=686 inference_max_steps=686 step_source=heuristic places=25 trans=22 constrained_places=1
+net_done round=1 net=1-4-9 reach_goal=False makespan=7806 trans_count=26 best_train_makespan=-1 elapsed=70.721793s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=1 index=8/20 net=1-5-4 min_steps=138 max_steps=900 inference_max_steps=900 step_source=heuristic places=42 trans=48 constrained_places=19
+net_done round=1 net=1-5-4 reach_goal=False makespan=6722 trans_count=16 best_train_makespan=-1 elapsed=82.182528s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=1 index=9/20 net=1-2-4 min_steps=123 max_steps=762 inference_max_steps=762 step_source=heuristic places=33 trans=30 constrained_places=3
+net_done round=1 net=1-2-4 reach_goal=True makespan=7393 trans_count=39 best_train_makespan=7393 elapsed=92.581714s inference_stop_reason= inference_deadlock_reason=
+net_begin round=1 index=10/20 net=1-4-11 min_steps=120 max_steps=686 inference_max_steps=686 step_source=heuristic places=25 trans=22 constrained_places=1
+net_done round=1 net=1-4-11 reach_goal=False makespan=7860 trans_count=26 best_train_makespan=-1 elapsed=74.038439s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=1 index=11/20 net=1-5-14 min_steps=138 max_steps=900 inference_max_steps=900 step_source=heuristic places=42 trans=48 constrained_places=19
+net_done round=1 net=1-5-14 reach_goal=True makespan=386355 trans_count=359 best_train_makespan=-1 elapsed=102.935347s inference_stop_reason= inference_deadlock_reason=
+net_begin round=1 index=12/20 net=1-3-4 min_steps=120 max_steps=670 inference_max_steps=670 step_source=heuristic places=23 trans=21 constrained_places=1
+net_done round=1 net=1-3-4 reach_goal=True makespan=13163 trans_count=36 best_train_makespan=13163 elapsed=61.427823s inference_stop_reason= inference_deadlock_reason=
+net_begin round=1 index=13/20 net=1-1-14 min_steps=120 max_steps=714 inference_max_steps=714 step_source=heuristic places=27 trans=27 constrained_places=3
+net_done round=1 net=1-1-14 reach_goal=True makespan=17242 trans_count=107 best_train_makespan=17550 elapsed=164.607843s inference_stop_reason= inference_deadlock_reason=
+net_begin round=1 index=14/20 net=1-3-9 min_steps=120 max_steps=670 inference_max_steps=670 step_source=heuristic places=23 trans=21 constrained_places=1
+net_done round=1 net=1-3-9 reach_goal=True makespan=27588 trans_count=69 best_train_makespan=27588 elapsed=111.831625s inference_stop_reason= inference_deadlock_reason=
+net_begin round=1 index=15/20 net=1-1-4 min_steps=120 max_steps=714 inference_max_steps=714 step_source=heuristic places=27 trans=27 constrained_places=3
+net_done round=1 net=1-1-4 reach_goal=True makespan=7393 trans_count=39 best_train_makespan=7393 elapsed=79.817966s inference_stop_reason= inference_deadlock_reason=
+net_begin round=1 index=16/20 net=1-5-11 min_steps=138 max_steps=900 inference_max_steps=900 step_source=heuristic places=42 trans=48 constrained_places=19
+net_done round=1 net=1-5-11 reach_goal=False makespan=6722 trans_count=19 best_train_makespan=-1 elapsed=91.323222s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=1 index=17/20 net=1-2-9 min_steps=123 max_steps=762 inference_max_steps=762 step_source=heuristic places=33 trans=30 constrained_places=3
+net_done round=1 net=1-2-9 reach_goal=True makespan=13023 trans_count=78 best_train_makespan=13023 elapsed=189.715354s inference_stop_reason= inference_deadlock_reason=
+net_begin round=1 index=18/20 net=1-3-11 min_steps=120 max_steps=670 inference_max_steps=670 step_source=heuristic places=23 trans=21 constrained_places=1
+net_done round=1 net=1-3-11 reach_goal=True makespan=33358 trans_count=84 best_train_makespan=33358 elapsed=145.130912s inference_stop_reason= inference_deadlock_reason=
+net_begin round=1 index=19/20 net=1-1-11 min_steps=120 max_steps=714 inference_max_steps=714 step_source=heuristic places=27 trans=27 constrained_places=3
+net_done round=1 net=1-1-11 reach_goal=True makespan=14627 trans_count=94 best_train_makespan=14627 elapsed=213.785525s inference_stop_reason= inference_deadlock_reason=
+net_begin round=1 index=20/20 net=1-1-9 min_steps=120 max_steps=714 inference_max_steps=714 step_source=heuristic places=27 trans=27 constrained_places=3
+net_done round=1 net=1-1-9 reach_goal=True makespan=12053 trans_count=77 best_train_makespan=12151 elapsed=155.949866s inference_stop_reason= inference_deadlock_reason=
+scene_round_eval round=1 success_rate=0.5000 success_count=10/20 avg_success_makespan=19067.6000 avg_success_trans_count=73.4000
+scene_checkpoint_update round=1 success_rate=0.5000
+scene_round_begin round=2/3 order=['1-3-11', '1-4-14', '1-2-14', '1-1-4', '1-2-4', '1-1-9', '1-5-14', '1-1-11', '1-5-11', '1-5-4', '1-2-9', '1-5-9', '1-4-11', '1-4-9', '1-3-4', '1-3-9', '1-4-4', '1-2-11', '1-3-14', '1-1-14']
+net_begin round=2 index=1/20 net=1-3-11 min_steps=120 max_steps=670 inference_max_steps=670 step_source=heuristic places=23 trans=21 constrained_places=1
+net_done round=2 net=1-3-11 reach_goal=True makespan=33358 trans_count=84 best_train_makespan=33358 elapsed=139.760708s inference_stop_reason= inference_deadlock_reason=
+net_begin round=2 index=2/20 net=1-4-14 min_steps=120 max_steps=686 inference_max_steps=686 step_source=heuristic places=25 trans=22 constrained_places=1
+net_done round=2 net=1-4-14 reach_goal=False makespan=7686 trans_count=26 best_train_makespan=-1 elapsed=69.136383s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=2 index=3/20 net=1-2-14 min_steps=123 max_steps=762 inference_max_steps=762 step_source=heuristic places=33 trans=30 constrained_places=3
+net_done round=2 net=1-2-14 reach_goal=True makespan=23765 trans_count=131 best_train_makespan=23765 elapsed=223.580601s inference_stop_reason= inference_deadlock_reason=
+net_begin round=2 index=4/20 net=1-1-4 min_steps=120 max_steps=714 inference_max_steps=714 step_source=heuristic places=27 trans=27 constrained_places=3
+net_done round=2 net=1-1-4 reach_goal=True makespan=7393 trans_count=39 best_train_makespan=7393 elapsed=78.327955s inference_stop_reason= inference_deadlock_reason=
+net_begin round=2 index=5/20 net=1-2-4 min_steps=123 max_steps=762 inference_max_steps=762 step_source=heuristic places=33 trans=30 constrained_places=3
+net_done round=2 net=1-2-4 reach_goal=True makespan=7393 trans_count=39 best_train_makespan=7393 elapsed=90.703402s inference_stop_reason= inference_deadlock_reason=
+net_begin round=2 index=6/20 net=1-1-9 min_steps=120 max_steps=714 inference_max_steps=714 step_source=heuristic places=27 trans=27 constrained_places=3
+net_done round=2 net=1-1-9 reach_goal=True makespan=12620 trans_count=74 best_train_makespan=12620 elapsed=167.396164s inference_stop_reason= inference_deadlock_reason=
+net_begin round=2 index=7/20 net=1-5-14 min_steps=138 max_steps=900 inference_max_steps=900 step_source=heuristic places=42 trans=48 constrained_places=19
+net_done round=2 net=1-5-14 reach_goal=False makespan=6602 trans_count=19 best_train_makespan=-1 elapsed=95.390094s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=2 index=8/20 net=1-1-11 min_steps=120 max_steps=714 inference_max_steps=714 step_source=heuristic places=27 trans=27 constrained_places=3
+net_done round=2 net=1-1-11 reach_goal=True makespan=14311 trans_count=90 best_train_makespan=14311 elapsed=205.089629s inference_stop_reason= inference_deadlock_reason=
+net_begin round=2 index=9/20 net=1-5-11 min_steps=138 max_steps=900 inference_max_steps=900 step_source=heuristic places=42 trans=48 constrained_places=19
+net_done round=2 net=1-5-11 reach_goal=False makespan=6602 trans_count=19 best_train_makespan=-1 elapsed=140.359853s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=2 index=10/20 net=1-5-4 min_steps=138 max_steps=900 inference_max_steps=900 step_source=heuristic places=42 trans=48 constrained_places=19
+net_done round=2 net=1-5-4 reach_goal=False makespan=6602 trans_count=16 best_train_makespan=-1 elapsed=79.460566s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=2 index=11/20 net=1-2-9 min_steps=123 max_steps=762 inference_max_steps=762 step_source=heuristic places=33 trans=30 constrained_places=3
+net_done round=2 net=1-2-9 reach_goal=True makespan=12634 trans_count=78 best_train_makespan=12634 elapsed=198.747490s inference_stop_reason= inference_deadlock_reason=
+net_begin round=2 index=12/20 net=1-5-9 min_steps=138 max_steps=900 inference_max_steps=900 step_source=heuristic places=42 trans=48 constrained_places=19
+net_done round=2 net=1-5-9 reach_goal=False makespan=6602 trans_count=19 best_train_makespan=-1 elapsed=93.045017s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=2 index=13/20 net=1-4-11 min_steps=120 max_steps=686 inference_max_steps=686 step_source=heuristic places=25 trans=22 constrained_places=1
+net_done round=2 net=1-4-11 reach_goal=False makespan=7860 trans_count=26 best_train_makespan=-1 elapsed=69.557410s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=2 index=14/20 net=1-4-9 min_steps=120 max_steps=686 inference_max_steps=686 step_source=heuristic places=25 trans=22 constrained_places=1
+net_done round=2 net=1-4-9 reach_goal=False makespan=7686 trans_count=26 best_train_makespan=-1 elapsed=69.570876s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=2 index=15/20 net=1-3-4 min_steps=120 max_steps=670 inference_max_steps=670 step_source=heuristic places=23 trans=21 constrained_places=1
+net_done round=2 net=1-3-4 reach_goal=True makespan=13163 trans_count=36 best_train_makespan=13163 elapsed=62.375728s inference_stop_reason= inference_deadlock_reason=
+net_begin round=2 index=16/20 net=1-3-9 min_steps=120 max_steps=670 inference_max_steps=670 step_source=heuristic places=23 trans=21 constrained_places=1
+net_done round=2 net=1-3-9 reach_goal=True makespan=27588 trans_count=72 best_train_makespan=27588 elapsed=137.736410s inference_stop_reason= inference_deadlock_reason=
+net_begin round=2 index=17/20 net=1-4-4 min_steps=120 max_steps=686 inference_max_steps=686 step_source=heuristic places=25 trans=22 constrained_places=1
+net_done round=2 net=1-4-4 reach_goal=True makespan=16360 trans_count=38 best_train_makespan=16360 elapsed=47.708588s inference_stop_reason= inference_deadlock_reason=
+net_begin round=2 index=18/20 net=1-2-11 min_steps=123 max_steps=762 inference_max_steps=762 step_source=heuristic places=33 trans=30 constrained_places=3
+net_done round=2 net=1-2-11 reach_goal=True makespan=25811 trans_count=98 best_train_makespan=25811 elapsed=213.742946s inference_stop_reason= inference_deadlock_reason=
+net_begin round=2 index=19/20 net=1-3-14 min_steps=120 max_steps=670 inference_max_steps=670 step_source=heuristic places=23 trans=21 constrained_places=1
+net_done round=2 net=1-3-14 reach_goal=True makespan=42013 trans_count=100 best_train_makespan=42013 elapsed=173.053182s inference_stop_reason= inference_deadlock_reason=
+net_begin round=2 index=20/20 net=1-1-14 min_steps=120 max_steps=714 inference_max_steps=714 step_source=heuristic places=27 trans=27 constrained_places=3
+net_done round=2 net=1-1-14 reach_goal=True makespan=19530 trans_count=111 best_train_makespan=19530 elapsed=184.707635s inference_stop_reason= inference_deadlock_reason=
+scene_round_eval round=2 success_rate=0.3000 success_count=6/20 avg_success_makespan=17409.0000 avg_success_trans_count=61.1667
+scene_round_begin round=3/3 order=['1-3-11', '1-4-4', '1-4-9', '1-3-4', '1-1-4', '1-4-11', '1-2-9', '1-3-14', '1-3-9', '1-1-14', '1-5-9', '1-1-11', '1-2-11', '1-5-4', '1-2-4', '1-2-14', '1-1-9', '1-5-14', '1-5-11', '1-4-14']
+net_begin round=3 index=1/20 net=1-3-11 min_steps=120 max_steps=670 inference_max_steps=670 step_source=heuristic places=23 trans=21 constrained_places=1
+net_done round=3 net=1-3-11 reach_goal=True makespan=33358 trans_count=77 best_train_makespan=33358 elapsed=129.396126s inference_stop_reason= inference_deadlock_reason=
+net_begin round=3 index=2/20 net=1-4-4 min_steps=120 max_steps=686 inference_max_steps=686 step_source=heuristic places=25 trans=22 constrained_places=1
+net_done round=3 net=1-4-4 reach_goal=True makespan=16385 trans_count=39 best_train_makespan=16385 elapsed=60.917843s inference_stop_reason= inference_deadlock_reason=
+net_begin round=3 index=3/20 net=1-4-9 min_steps=120 max_steps=686 inference_max_steps=686 step_source=heuristic places=25 trans=22 constrained_places=1
+net_done round=3 net=1-4-9 reach_goal=True makespan=39881 trans_count=85 best_train_makespan=39881 elapsed=49.350165s inference_stop_reason= inference_deadlock_reason=
+net_begin round=3 index=4/20 net=1-3-4 min_steps=120 max_steps=670 inference_max_steps=670 step_source=heuristic places=23 trans=21 constrained_places=1
+net_done round=3 net=1-3-4 reach_goal=True makespan=13163 trans_count=36 best_train_makespan=13163 elapsed=60.840327s inference_stop_reason= inference_deadlock_reason=
+net_begin round=3 index=5/20 net=1-1-4 min_steps=120 max_steps=714 inference_max_steps=714 step_source=heuristic places=27 trans=27 constrained_places=3
+net_done round=3 net=1-1-4 reach_goal=True makespan=7486 trans_count=38 best_train_makespan=7486 elapsed=77.988856s inference_stop_reason= inference_deadlock_reason=
+net_begin round=3 index=6/20 net=1-4-11 min_steps=120 max_steps=686 inference_max_steps=686 step_source=heuristic places=25 trans=22 constrained_places=1
+net_done round=3 net=1-4-11 reach_goal=False makespan=7686 trans_count=26 best_train_makespan=-1 elapsed=69.774853s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=3 index=7/20 net=1-2-9 min_steps=123 max_steps=762 inference_max_steps=762 step_source=heuristic places=33 trans=30 constrained_places=3
+net_done round=3 net=1-2-9 reach_goal=True makespan=11902 trans_count=79 best_train_makespan=11902 elapsed=176.919635s inference_stop_reason= inference_deadlock_reason=
+net_begin round=3 index=8/20 net=1-3-14 min_steps=120 max_steps=670 inference_max_steps=670 step_source=heuristic places=23 trans=21 constrained_places=1
+net_done round=3 net=1-3-14 reach_goal=True makespan=42013 trans_count=103 best_train_makespan=42013 elapsed=194.393714s inference_stop_reason= inference_deadlock_reason=
+net_begin round=3 index=9/20 net=1-3-9 min_steps=120 max_steps=670 inference_max_steps=670 step_source=heuristic places=23 trans=21 constrained_places=1
+net_done round=3 net=1-3-9 reach_goal=True makespan=27588 trans_count=74 best_train_makespan=27588 elapsed=125.320554s inference_stop_reason= inference_deadlock_reason=
+net_begin round=3 index=10/20 net=1-1-14 min_steps=120 max_steps=714 inference_max_steps=714 step_source=heuristic places=27 trans=27 constrained_places=3
+net_done round=3 net=1-1-14 reach_goal=True makespan=19069 trans_count=107 best_train_makespan=19069 elapsed=244.539060s inference_stop_reason= inference_deadlock_reason=
+net_begin round=3 index=11/20 net=1-5-9 min_steps=138 max_steps=900 inference_max_steps=900 step_source=heuristic places=42 trans=48 constrained_places=19
+net_done round=3 net=1-5-9 reach_goal=False makespan=6671 trans_count=19 best_train_makespan=-1 elapsed=97.056667s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=3 index=12/20 net=1-1-11 min_steps=120 max_steps=714 inference_max_steps=714 step_source=heuristic places=27 trans=27 constrained_places=3
+net_done round=3 net=1-1-11 reach_goal=True makespan=15705 trans_count=93 best_train_makespan=15705 elapsed=189.462757s inference_stop_reason= inference_deadlock_reason=
+net_begin round=3 index=13/20 net=1-2-11 min_steps=123 max_steps=762 inference_max_steps=762 step_source=heuristic places=33 trans=30 constrained_places=3
+net_done round=3 net=1-2-11 reach_goal=True makespan=21768 trans_count=99 best_train_makespan=21768 elapsed=162.726739s inference_stop_reason= inference_deadlock_reason=
+net_begin round=3 index=14/20 net=1-5-4 min_steps=138 max_steps=900 inference_max_steps=900 step_source=heuristic places=42 trans=48 constrained_places=19
+net_done round=3 net=1-5-4 reach_goal=False makespan=6611 trans_count=16 best_train_makespan=-1 elapsed=78.571704s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=3 index=15/20 net=1-2-4 min_steps=123 max_steps=762 inference_max_steps=762 step_source=heuristic places=33 trans=30 constrained_places=3
+net_done round=3 net=1-2-4 reach_goal=True makespan=7396 trans_count=39 best_train_makespan=7396 elapsed=91.088914s inference_stop_reason= inference_deadlock_reason=
+net_begin round=3 index=16/20 net=1-2-14 min_steps=123 max_steps=762 inference_max_steps=762 step_source=heuristic places=33 trans=30 constrained_places=3
+net_done round=3 net=1-2-14 reach_goal=True makespan=26022 trans_count=120 best_train_makespan=26022 elapsed=191.879607s inference_stop_reason= inference_deadlock_reason=
+net_begin round=3 index=17/20 net=1-1-9 min_steps=120 max_steps=714 inference_max_steps=714 step_source=heuristic places=27 trans=27 constrained_places=3
+net_done round=3 net=1-1-9 reach_goal=True makespan=14246 trans_count=81 best_train_makespan=14246 elapsed=163.903611s inference_stop_reason= inference_deadlock_reason=
+net_begin round=3 index=18/20 net=1-5-14 min_steps=138 max_steps=900 inference_max_steps=900 step_source=heuristic places=42 trans=48 constrained_places=19
+net_done round=3 net=1-5-14 reach_goal=False makespan=6602 trans_count=19 best_train_makespan=-1 elapsed=92.614962s inference_stop_reason=deadlock inference_deadlock_reason=no_enabled_transitions
+net_begin round=3 index=19/20 net=1-5-11 min_steps=138 max_steps=900 inference_max_steps=900 step_source=heuristic places=42 trans=48 constrained_places=19

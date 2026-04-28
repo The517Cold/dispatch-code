@@ -1,0 +1,2 @@
+# bc_pretrain: one [BC] line per epoch; sections per net
+# nets_total:20

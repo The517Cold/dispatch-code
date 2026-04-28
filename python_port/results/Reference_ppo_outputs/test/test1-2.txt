@@ -1,0 +1,21 @@
+ERROR
+Traceback (most recent call last):
+  File "d:\dispatch_code\BC+DAgger+PPO\new_job\python_port\train_ppo_3.py", line 504, in main
+    result = search.search()
+  File "d:\dispatch_code\BC+DAgger+PPO\new_job\python_port\petri_gcn_ppo_4_1.py", line 1531, in search
+    self.train_model()
+  File "d:\dispatch_code\BC+DAgger+PPO\new_job\python_port\petri_gcn_ppo_4_1.py", line 1184, in train_model
+    steps_collected, ep_rewards, ep_makespans = self._collect_mixed_rollouts(self.steps_per_epoch, progress)
+  File "d:\dispatch_code\BC+DAgger+PPO\new_job\python_port\petri_gcn_ppo_4_1.py", line 773, in _collect_mixed_rollouts
+    env_experiences, async_collected, async_rewards, async_makespans = self._async_collect(sampled_envs, steps_per_env, total_steps)
+  File "d:\dispatch_code\BC+DAgger+PPO\new_job\python_port\petri_gcn_ppo_4_1.py", line 898, in _async_collect
+    collected, ep_rewards, ep_makespans = self._collect_rollouts(steps_per_env)
+  File "d:\dispatch_code\BC+DAgger+PPO\new_job\python_port\petri_gcn_ppo_4_1.py", line 639, in _collect_rollouts
+    encoded = self.encoder.encode(curr_marking)
+  File "d:\dispatch_code\BC+DAgger+PPO\new_job\python_port\petri_net_platform\representation\features.py", line 350, in encode
+    return self.feature_encoder.encode(marking)
+  File "d:\dispatch_code\BC+DAgger+PPO\new_job\python_port\petri_net_platform\representation\features.py", line 81, in encode
+    transition_features=self.encode_transitions(marking),
+  File "d:\dispatch_code\BC+DAgger+PPO\new_job\python_port\petri_net_platform\representation\features.py", line 130, in encode_transitions
+    total_post = degree[3].item()
+KeyboardInterrupt

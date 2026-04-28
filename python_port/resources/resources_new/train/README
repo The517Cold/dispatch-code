@@ -1,0 +1,20 @@
+dataset update summary
+
+1. resources current file set
+   - scene 1: 1-x-4, 1-x-5, 1-x-6, 1-x-7, 1-x-8, 1-x-9 (x=1..5)
+   - scene 2: 2-x-4, 2-x-5, 2-x-6, 2-x-7, 2-x-8, 2-x-9 (x=1..5)
+   - scene 3: 3-x-4, 3-x-5, 3-x-6, 3-x-7, 3-x-8, 3-x-9 (x=1..5)
+
+2. time restoration and generation baseline
+   - ttime and residenceTime for newly added 5/7/8 files come from test/{scene}-{variant}-13.txt baseline files
+   - only ptime is independently perturbed for each generated file
+
+3. ptime update rule
+   - perturbed place count = ceil(40% of ptime places) per file
+   - modified places are chosen to be sparse on the place-connectivity graph through transitions
+   - new values are sampled within +/-50% of the original integer value, excluding the original value
+   - final ptime values are normalized to multiples of 5
+
+4. wafer count rules
+   - files with wafer count > 10 were previously renamed to count 6
+   - newly added files use wafer counts 5, 7, and 8, with place 2 token count and goalPlace adjusted accordingly

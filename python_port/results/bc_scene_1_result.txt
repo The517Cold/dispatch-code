@@ -1,0 +1,21 @@
+ERROR
+Traceback (most recent call last):
+  File "c:\Users\jicai\Desktop\new_job\python_port\run_bc_pretrain.py", line 51, in main
+    out = pretrain_across_nets(
+  File "c:\Users\jicai\Desktop\new_job\python_port\imitation\pretrain.py", line 111, in pretrain_across_nets
+    generated = generate_augmented_bc_samples(
+  File "c:\Users\jicai\Desktop\new_job\python_port\imitation\expert_dataset.py", line 242, in generate_augmented_bc_samples
+    clean_result, clean_extra = _run_expert_search(
+  File "c:\Users\jicai\Desktop\new_job\python_port\imitation\expert_dataset.py", line 199, in _run_expert_search
+    result = search.search()
+  File "c:\Users\jicai\Desktop\new_job\python_port\petri_net_platform\search\a_star.py", line 188, in search
+    return self._find()
+  File "c:\Users\jicai\Desktop\new_job\python_port\petri_net_platform\search\a_star.py", line 244, in _find
+    self._register_dominance(next_marking)
+  File "c:\Users\jicai\Desktop\new_job\python_port\petri_net_platform\search\a_star.py", line 394, in _register_dominance
+    if self._dominates(profile, existing):
+  File "c:\Users\jicai\Desktop\new_job\python_port\petri_net_platform\search\a_star.py", line 424, in _dominates
+    if not self._nested_tuple_le(left["t_info"], right["t_info"]):
+  File "c:\Users\jicai\Desktop\new_job\python_port\petri_net_platform\search\a_star.py", line 444, in _nested_tuple_le
+    for left_item, right_item in zip(left_group, right_group):
+KeyboardInterrupt

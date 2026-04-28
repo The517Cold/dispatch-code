@@ -1,0 +1,21 @@
+ERROR
+Traceback (most recent call last):
+  File "c:\Users\jicai\Desktop\new_job\python_port\run_gcn_dqn_enhanced_hq.py", line 634, in main
+    + " elapsed="
+  File "c:\Users\jicai\Desktop\new_job\python_port\petri_net_platform\search\petri_net_gcn_dqn_enhanced.py", line 767, in search
+    self.train_model()
+  File "c:\Users\jicai\Desktop\new_job\python_port\petri_net_platform\search\petri_net_gcn_dqn_enhanced.py", line 497, in train_model
+    epsilon, episode_steps, episode_updates, total_steps, loss_delta, update_delta, stop_info, final_marking = self._run_training_episode(
+  File "c:\Users\jicai\Desktop\new_job\python_port\petri_net_platform\search\petri_net_gcn_dqn_enhanced.py", line 434, in _run_training_episode
+    loss = self._learn_batch()
+  File "c:\Users\jicai\Desktop\new_job\python_port\petri_net_platform\search\petri_net_gcn_dqn_enhanced.py", line 324, in _learn_batch
+    states = self.encoder.encode_batch([exp.state for exp in batch])
+  File "c:\Users\jicai\Desktop\new_job\python_port\petri_net_platform\representation\features.py", line 334, in encode_batch
+    return self.feature_encoder.encode_batch(markings)
+  File "c:\Users\jicai\Desktop\new_job\python_port\petri_net_platform\representation\features.py", line 78, in encode_batch
+    encoded = self.encode(marking)
+  File "c:\Users\jicai\Desktop\new_job\python_port\petri_net_platform\representation\features.py", line 71, in encode
+    transition_features=self.encode_transitions(marking),
+  File "c:\Users\jicai\Desktop\new_job\python_port\petri_net_platform\representation\features.py", line 137, in encode_transitions
+    return torch.tensor(rows, dtype=torch.float32, device=self.device)
+KeyboardInterrupt
