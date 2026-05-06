@@ -88,6 +88,10 @@ class PetriNetGCNPPOPro(AbstractSearch):
         reward_progress_weight: float = 2.0,  # 进度奖励权重
         reward_repeat_penalty: float = 0.2,  # 重复奖励惩罚
         reward_time_scale: float = 1000.0,  # 时间奖励缩放
+        reward_residence_warn_ratio: float = 0.7,  # 驻留时间警告阈值占比（超过此比例开始渐进惩罚）
+        reward_residence_penalty_max: float = 30.0,  # 驻留时间超限最大惩罚
+        reward_residence_safe_bonus: float = 0.5,  # 驻留时间安全时的小额奖励
+        reward_mobility_weight: float = 0.3,  # 动作空间收缩惩罚权重
         beam_width: int = 100,  # 搜索宽度
         beam_depth: int = 800,  # 搜索深度
         search_strategy: str = "beam",  # 搜索策略: "beam"、"greedy" 或 "stochastic"
@@ -151,6 +155,10 @@ class PetriNetGCNPPOPro(AbstractSearch):
         self.reward_progress_weight = reward_progress_weight
         self.reward_repeat_penalty = reward_repeat_penalty
         self.reward_time_scale = reward_time_scale
+        self.reward_residence_warn_ratio = reward_residence_warn_ratio
+        self.reward_residence_penalty_max = reward_residence_penalty_max
+        self.reward_residence_safe_bonus = reward_residence_safe_bonus
+        self.reward_mobility_weight = reward_mobility_weight
         
         self.beam_width = beam_width
         self.beam_depth = beam_depth
@@ -617,15 +625,52 @@ class PetriNetGCNPPOPro(AbstractSearch):
             self._mask_cache[cache_key] = mask.clone()
         return mask
 
+    def _compute_residence_reward(self, marking) -> float:
+        """
+        计算驻留时间奖惩信号。
+
+        基于当前 marking 中每个库所内 token 的驻留时间与该库所的
+        max_residence_time 阈值（来自底层 Petri 网文件），产生三档信号：
+          1. 安全区（ratio < warn_ratio）：给予小额正向奖励鼓励正常推进
+          2. 警告区（warn_ratio <= ratio < 1.0）：渐进式惩罚，ratio 越接近 1.0 越重
+          3. 超限（ratio >= 1.0 或 over_max_residence_time）：施加最大惩罚
+
+        不同的网文件拥有不同的 max_residence_time 向量，因此阈值天然适配各环境。
+        """
+        if not hasattr(marking, "residence_time_info"):
+            return self.reward_residence_safe_bonus
+
+        if bool(getattr(marking, "over_max_residence_time", False)):
+            return -self.reward_residence_penalty_max
+
+        worst_ratio = 0.0
+        for place_idx, residence_deque in enumerate(marking.residence_time_info):
+            limit = self.max_residence_time[place_idx]
+            if limit >= 2 ** 31 - 1 or limit <= 0:
+                continue
+            for token_residence in residence_deque:
+                ratio = float(token_residence) / float(limit)
+                worst_ratio = max(worst_ratio, ratio)
+
+        warn = self.reward_residence_warn_ratio
+        if worst_ratio < warn:
+            return self.reward_residence_safe_bonus
+        elif worst_ratio < 1.0:
+            severity = (worst_ratio - warn) / (1.0 - warn)
+            return -self.reward_residence_penalty_max * (severity ** 2)
+        else:
+            return -self.reward_residence_penalty_max
+
     def _step_env(self, curr_marking, action: int, seen_count: dict) -> Tuple[any, float, bool, bool]:
         """
-            执行环境一步
-            :param curr_marking: 当前状态
-            :param action: 执行的动作
-            :param seen_count: 已访问的状态计数
-            :return: 下一个状态,奖励,是否结束,是否死锁
+        执行环境一步，返回 (下一状态, 奖励, 是否结束, 是否死锁)。
+
+        奖励信号由四个正交分量叠加组成（步骤奖励不参与目标 bonus 的裁剪）：
+          1. 进度/时间/重复 → step_reward（限幅防梯度爆炸）
+          2. 驻留时间奖惩 → residence_reward
+          3. 动作空间收缩惩罚 → mobility_penalty（接近死锁的早期警告）
+          4. 目标完成奖励 → goal_bonus（独立叠加，不被限幅截断）
         """
-        # 动作合法性检查
         if action < 0 or action >= self.petri_net.get_trans_count():
             return curr_marking, -self.reward_deadlock_penalty, True, True
 
@@ -633,55 +678,67 @@ class PetriNetGCNPPOPro(AbstractSearch):
         if not mask[action].item():
             return curr_marking, -self.reward_deadlock_penalty, True, True
 
-        next_marking = self.petri_net.launch(action)  # 发射变迁,使环境向前推进一步
-        self.petri_net.set_marking(next_marking)  # 这时候才真正推进环境
-        
-        # 计算奖励
+        curr_enabled_count = int(mask.sum().item())
+
+        next_marking = self.petri_net.launch(action)
+        self.petri_net.set_marking(next_marking)
+
         done = self._is_goal(next_marking)
         next_mask = self._mask_from_marking(next_marking)
         deadlock = not bool(next_mask.any().item()) and (not done)
-        
-        delta_t = float(next_marking.get_prefix() - curr_marking.get_prefix())  # 两个标识之间时间差值
-        progress = float(self._goal_distance(curr_marking) - self._goal_distance(next_marking))  # 发射这个变迁之后完成晶圆数
-        time_cost = delta_t / self.reward_time_scale
-        
-        repeat_penalty = seen_count.get(self._state_key(next_marking), 0) * self.reward_repeat_penalty  # 重复访问状态的惩罚
 
-        # ★ 修复：将步骤奖励与目标奖励分两层计算。
-        # 原代码将 reward_goal_bonus(1500) 加入后再整体 clip 到 [-100,100]，
-        # 导致目标奖励完全被截断，智能体无法区分"到达目标"与"高步骤奖励"，
-        # 也无法感知 makespan 优化信号——这是模型无法收敛的重要原因之一。
-        # 修复方案：仅对步骤奖励做保守裁剪，目标 bonus 另行叠加，不参与裁剪。
+        # ── 1. 基础步骤奖励 ──
+        delta_t = float(next_marking.get_prefix() - curr_marking.get_prefix())
+        progress = float(self._goal_distance(curr_marking) - self._goal_distance(next_marking))
+        time_cost = delta_t / self.reward_time_scale
+
+        visit_count = seen_count.get(self._state_key(next_marking), 0)
+        repeat_penalty = min(visit_count, 10) * self.reward_repeat_penalty
+
         step_reward = -time_cost + self.reward_progress_weight * progress - repeat_penalty
-        
+
         if deadlock:
             step_reward -= self.reward_deadlock_penalty
 
-        # 步骤奖励限幅（防止时间/重复惩罚的极端值破坏梯度稳定性）
-        step_reward = max(-self.reward_deadlock_penalty, min(50.0, step_reward))
+        clip_bound = self.reward_deadlock_penalty
+        step_reward = max(-clip_bound, min(clip_bound * 0.5, step_reward))
 
+        # ── 2. 驻留时间奖惩（阈值来自 self.max_residence_time，随网文件变化） ──
+        residence_reward = self._compute_residence_reward(next_marking)
+
+        # ── 3. 动作空间收缩惩罚（提前感知趋向死锁的状态） ──
+        mobility_penalty = 0.0
+        if not deadlock and not done:
+            next_enabled_count = int(next_mask.sum().item())
+            trans_count = len(self.pre[0])
+            if next_enabled_count <= max(2, trans_count // 8):
+                mobility_penalty = self.reward_mobility_weight * (
+                    1.0 - next_enabled_count / max(1, curr_enabled_count)
+                )
+
+        # ── 4. 目标完成奖励（独立叠加，不受 step_reward 限幅影响） ──
         goal_bonus = 0.0
         if done:
             makespan = next_marking.get_prefix()
             env_best = self.best_records[self.current_env_name]["makespan"]
-            
+
             if env_best == 2 ** 31 - 1:
-                # 第一次到达目标状态
                 goal_bonus = self.reward_goal_bonus
                 self._log(f"    [Goal] [{self.current_env_name}] First Goal Reached! Makespan: {makespan}")
             else:
-                # 非第一次到达目标状态，根据改进或恶化给予差异化奖励
                 improvement = env_best - makespan
-                if improvement > 0:  # 改进
-                    extra_bonus = (float(improvement) / self.reward_time_scale) * 100.0
-                    goal_bonus = self.reward_goal_bonus + min(self.reward_goal_bonus * 2.0, extra_bonus)
+                if improvement > 0:
+                    improvement_ratio = float(improvement) / self.reward_time_scale
+                    extra_bonus = improvement_ratio * 80.0
+                    goal_bonus = self.reward_goal_bonus + min(self.reward_goal_bonus, extra_bonus)
                     self._log(f"    [Goal] [{self.current_env_name}] New Best! Makespan: {makespan} (improved by {improvement})")
-                else:  # 次优解，给予降级奖励
+                else:
                     degradation = makespan - env_best
-                    penalty_for_worse = (float(degradation) / self.reward_time_scale) * 50.0
-                    goal_bonus = max(self.reward_goal_bonus * 0.2, self.reward_goal_bonus - penalty_for_worse)
+                    degradation_ratio = float(degradation) / self.reward_time_scale
+                    penalty_for_worse = degradation_ratio * 80.0
+                    goal_bonus = max(self.reward_goal_bonus * 0.1, self.reward_goal_bonus - penalty_for_worse)
 
-        reward = step_reward + goal_bonus
+        reward = step_reward + residence_reward - mobility_penalty + goal_bonus
         return next_marking, reward, done, deadlock
 
     def _collect_rollouts(self, num_steps: int):

@@ -235,14 +235,14 @@ class PetriNetGCNPPOProHQ(PetriNetGCNPPOPro):
             "gamma": _env_float("GCN_PPO_HQ_GAMMA", 0.999),
             "lr": _env_float("GCN_PPO_HQ_LR", 3e-4),
             # ★ 新增：L2正则化系数，抑制模型过拟合到特定训练网络的拓扑细节
-            "weight_decay": _env_float("GCN_PPO_HQ_WEIGHT_DECAY", 1e-5),
+            "weight_decay": _env_float("GCN_PPO_HQ_WEIGHT_DECAY", 1e-4), # 1e-5
             "steps_per_epoch": _env_int("GCN_PPO_HQ_STEPS_PER_EPOCH", 6144),  # 12288
             "minibatch_size": _env_int("GCN_PPO_HQ_MINIBATCH_SIZE", 128),
             "ppo_epochs": _env_int("GCN_PPO_HQ_PPO_EPOCHS", 4),  # ppo更新轮数
             "target_kl": _env_float("GCN_PPO_HQ_TARGET_KL", 0.07),
 
-            "entropy_coef_start": _env_float("GCN_PPO_HQ_ENTROPY_START", 0.20),##0.09
-            "entropy_coef_end": _env_float("GCN_PPO_HQ_ENTROPY_END", 0.035),
+            "entropy_coef_start": _env_float("GCN_PPO_HQ_ENTROPY_START", 0.25), #0.09
+            "entropy_coef_end": _env_float("GCN_PPO_HQ_ENTROPY_END", 0.05),
 
             "temperature_start": _env_float("GCN_PPO_HQ_TEMPERATURE_START", 2.3),
             "temperature_end": _env_float("GCN_PPO_HQ_TEMPERATURE_END", 1.4),
@@ -254,6 +254,10 @@ class PetriNetGCNPPOProHQ(PetriNetGCNPPOPro):
             "reward_progress_weight": 2.0,
             "reward_repeat_penalty": _env_float("GCN_PPO_HQ_REWARD_REPEAT", 2.7),
             "reward_time_scale": _env_float("GCN_PPO_HQ_REWARD_TIME_SCALE", 1000.0),
+            "reward_residence_warn_ratio": _env_float("GCN_PPO_HQ_RESIDENCE_WARN_RATIO", 0.7),
+            "reward_residence_penalty_max": _env_float("GCN_PPO_HQ_RESIDENCE_PENALTY_MAX", 30.0),
+            "reward_residence_safe_bonus": _env_float("GCN_PPO_HQ_RESIDENCE_SAFE_BONUS", 0.5),
+            "reward_mobility_weight": _env_float("GCN_PPO_HQ_MOBILITY_WEIGHT", 0.3),
 
             "beam_width": _env_int("GCN_PPO_HQ_BEAM_WIDTH", 100),
             "beam_depth": _env_int("GCN_PPO_HQ_BEAM_DEPTH", 800),
@@ -292,17 +296,24 @@ class PetriNetGCNPPOProHQ(PetriNetGCNPPOPro):
 
 def main():
     base_dir = os.path.dirname(__file__)
-    out_path = os.path.join(base_dir, "results/Reference_ppo_outputs/test/test1-17.txt")
-    progress_path = os.path.join(base_dir, "results/Reference_ppo_outputs/test/test1-17.txt")
+    out_path = os.path.join(base_dir, "results/Reference_ppo_outputs/class/case4-1.txt")
+    progress_path = os.path.join(base_dir, "results/Reference_ppo_outputs/class/case4-1.txt")
     
     try:
         default_train_files = [ 
-                            "1-2-13-1.txt","1-2-13-2.txt","1-2-13-3.txt","1-2-13-4.txt","1-2-13-5.txt",
+                            "1-4-1.txt","1-4-2.txt","1-4-3.txt","1-4-4.txt",
+                            "3-2-1.txt","3-2-2.txt","3-2-3.txt","3-2-4.txt",
+                            "3-4-1.txt","3-4-2.txt","3-4-3.txt","3-4-4.txt",                 
                                ]
+
         train_files = _env_list("GCN_PPO_HQ_TRAIN_FILES") or default_train_files
         # 训练文件搜索路径
         train_roots = [
-                       "resources/resources_new/train/family1"
+                    # "resources/resources_new/train/class/case1/resources"
+                    # "resources/resources_new/train/class/case2/resources"
+                    # "resources/resources_new/train/class/case3/resources"
+                    "resources/resources_new/train/class/case4/resources"
+                    # "resources/resources_new/train/class/case5/resources"
                         ]
 
         eval_files = _env_list("GCN_PPO_HQ_EVAL_FILES")
@@ -335,7 +346,7 @@ def main():
         else:
             base_steps = 10000 * env_count
             extra_steps = (complexity * 2000 + max_constrained_count * 3000) * env_count
-            max_train_steps = min(307200, max(50000, base_steps + extra_steps))
+            max_train_steps = min(430080, max(50000, base_steps + extra_steps))
             mode = "hq-full-generalization"
 
         line = "GCN-PPO Pro HQ mode: " + mode
@@ -399,7 +410,7 @@ def main():
         signature = build_signature(main_env["path"], main_env["context"])
         profile = build_profile(main_env["context"])
         #==========================================================================================
-        ckpt_path = checkpoint_path(base_dir, "Reference_checkpoint/test/test1-17", signature)
+        ckpt_path = checkpoint_path(base_dir, "Reference_checkpoint/class/case4-1", signature)
 
         reuse_checkpoint = os.environ.get("GCN_PPO_HQ_REUSE", "0") == "1"
         reuse_similar = os.environ.get("GCN_PPO_HQ_REUSE_SIMILAR", "1") == "1"
