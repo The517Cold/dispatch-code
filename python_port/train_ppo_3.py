@@ -22,20 +22,54 @@ from petri_gcn_ppo_4_1 import PetriNetGCNPPOPro
 
 
 def _env_int(name, default):
-    # 从环境变量中获取整数，默认值为default
+    """从环境变量读取整数；缺省 / 空 / 解析失败时返回 default。"""
     value = os.environ.get(name)
-    return int(value) if value not in (None, "") else default
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        print(f"Warning: 环境变量 {name}={value!r} 无法解析为 int，使用默认 {default}", flush=True)
+        return default
 
 
 def _env_float(name, default):
-    # 从环境变量中获取浮点数，默认值为default
+    """从环境变量读取浮点；缺省 / 空 / 解析失败时返回 default。"""
     value = os.environ.get(name)
-    return float(value) if value not in (None, "") else default
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        print(f"Warning: 环境变量 {name}={value!r} 无法解析为 float，使用默认 {default}", flush=True)
+        return default
+
+
+def _env_bool(name, default: bool) -> bool:
+    """
+    从环境变量读取布尔；接受 0/1/true/false/yes/no/on/off（不区分大小写）。
+
+    v2 修复：原代码大量使用 `os.environ.get(NAME, "1") == "0"` 这种容易写反
+    的表达式，导致 use_il_warmstart / async_collection / fast_mode 等开关
+    完全相反于命名语义。统一通过该函数解析，杜绝此类拼写陷阱。
+    """
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    text = value.strip().lower()
+    if text in ("1", "true", "t", "yes", "y", "on"):
+        return True
+    if text in ("0", "false", "f", "no", "n", "off", ""):
+        return False
+    print(
+        f"Warning: 环境变量 {name}={value!r} 无法解析为 bool，使用默认 {default}",
+        flush=True,
+    )
+    return bool(default)
 
 
 def _env_list(name):
-    # 从环境变量中获取列表，每个元素之间用逗号分隔
-    # 允许元素包含空格
+    """从环境变量读取逗号分隔列表；忽略空白项。"""
     raw = os.environ.get(name, "").strip()
     return [item.strip() for item in raw.split(",") if item.strip()]
 
@@ -175,8 +209,11 @@ def _state_dict_cpu(module):
 
 
 def _run_inference_suite(search, env_pool, suite_name):
-    # 运行推理套件，返回推理结果和摘要
-    # 如果环境池为空，返回空列表和摘要
+    """
+    运行推理套件并产出每环境明细 + 整体摘要。
+
+    v2 改进：单环境失败时记录错误并继续，避免整套评估因单点异常中断。
+    """
     if not env_pool:
         return [], f"{suite_name}_summary=success:0/0,avg_makespan:-1,worst_makespan:-1"
 
@@ -186,27 +223,40 @@ def _run_inference_suite(search, env_pool, suite_name):
     success_count = 0
 
     for env in env_pool:
-        search.switch_environment(env)
-        start = time.perf_counter()
-        result = search.search()
-        elapsed = time.perf_counter() - start
-        extra = dict(search.get_extra_info())
-        trans = result.get_trans()
-        markings = result.get_markings()
-        makespan = markings[-1].get_prefix() if markings and len(trans) > 0 else -1
-        reach_goal = bool(extra.get("reachGoal"))
-        if reach_goal and makespan >= 0:
-            success_count += 1
-            makespans.append(makespan)
-        details.append(
-            f"{suite_name}:{env['name']}|goal={reach_goal}|makespan={makespan}|trans_count={len(trans)}|elapsed={elapsed:.6f}s"
-        )
+        env_name = env.get("name", "unknown")
+        try:
+            search.switch_environment(env)
+            start = time.perf_counter()
+            result = search.search()
+            elapsed = time.perf_counter() - start
+            extra = dict(search.get_extra_info())
+            trans = result.get_trans()
+            markings = result.get_markings()
+            makespan = markings[-1].get_prefix() if markings and len(trans) > 0 else -1
+            reach_goal = bool(extra.get("reachGoal"))
+            if reach_goal and makespan >= 0:
+                success_count += 1
+                makespans.append(makespan)
+            details.append(
+                f"{suite_name}:{env_name}|goal={reach_goal}|makespan={makespan}|"
+                f"trans_count={len(trans)}|elapsed={elapsed:.6f}s"
+            )
+        except BaseException as exc:
+            details.append(
+                f"{suite_name}:{env_name}|goal=False|makespan=-1|trans_count=0|elapsed=-1|"
+                f"error={type(exc).__name__}:{exc}"
+            )
+            print(f"Warning: 推理套件 {suite_name} 在 {env_name} 出错: {exc}", flush=True)
+
     # 恢复原来的环境
     restore_env = next((env for env in env_pool if env.get("name") == saved_env_name), None)
-    if restore_env is None and hasattr(search, "env_pool"):
+    if restore_env is None and hasattr(search, "env_pool") and search.env_pool:
         restore_env = next((env for env in search.env_pool if env.get("name") == saved_env_name), None)
     if restore_env is not None:
-        search.switch_environment(restore_env)
+        try:
+            search.switch_environment(restore_env)
+        except BaseException:
+            pass
 
     avg_makespan = int(sum(makespans) / len(makespans)) if makespans else -1
     worst_makespan = max(makespans) if makespans else -1
@@ -241,8 +291,8 @@ class PetriNetGCNPPOProHQ(PetriNetGCNPPOPro):
             "ppo_epochs": _env_int("GCN_PPO_HQ_PPO_EPOCHS", 4),  # ppo更新轮数
             "target_kl": _env_float("GCN_PPO_HQ_TARGET_KL", 0.07),
 
-            "entropy_coef_start": _env_float("GCN_PPO_HQ_ENTROPY_START", 0.25), #0.09
-            "entropy_coef_end": _env_float("GCN_PPO_HQ_ENTROPY_END", 0.05),
+            "entropy_coef_start": _env_float("GCN_PPO_HQ_ENTROPY_START", 0.32), #0.25
+            "entropy_coef_end": _env_float("GCN_PPO_HQ_ENTROPY_END", 0.20),
 
             "temperature_start": _env_float("GCN_PPO_HQ_TEMPERATURE_START", 2.3),
             "temperature_end": _env_float("GCN_PPO_HQ_TEMPERATURE_END", 1.4),
@@ -267,15 +317,16 @@ class PetriNetGCNPPOProHQ(PetriNetGCNPPOPro):
 
             # ★ 新增：eval_env_pool 独立评估间隔（0=禁用；通过实例属性传入，不进参数字典）
             "mask_cache_limit": _env_int("GCN_PPO_HQ_MASK_CACHE_LIMIT", 40000),
-            "mixed_rollout": os.environ.get("GCN_PPO_HQ_MIXED_ROLLOUT", "1") == "1",
-            "cross_env_gae": os.environ.get("GCN_PPO_HQ_CROSS_ENV_GAE", "1") == "1",
-            "async_collection": os.environ.get("GCN_PPO_HQ_ASYNC_COLLECTION", "0") == "0",
-            "envs_per_epoch": _env_int("GCN_PPO_HQ_ENVS_PER_EPOCH", 4),  # 每个epoch选3个环境进行训练
-            "dynamic_curriculum": os.environ.get("GCN_PPO_HQ_DYNAMIC_CURRICULUM", "1") == "1",
+            "mixed_rollout": _env_bool("GCN_PPO_HQ_MIXED_ROLLOUT", True),
+            "cross_env_gae": _env_bool("GCN_PPO_HQ_CROSS_ENV_GAE", True),
+            # ★ 修复：原 `"0" == "0"` 写法恒为 True 与命名相反；现按字面语义解析。
+            "async_collection": _env_bool("GCN_PPO_HQ_ASYNC_COLLECTION", False),
+            "envs_per_epoch": _env_int("GCN_PPO_HQ_ENVS_PER_EPOCH", 4),
+            "dynamic_curriculum": _env_bool("GCN_PPO_HQ_DYNAMIC_CURRICULUM", True),
             "curriculum_warmup_ratio": _env_float("GCN_PPO_HQ_CURRICULUM_WARMUP_RATIO", 0.3),
             "stochastic_num_rollouts": _env_int("GCN_PPO_HQ_STOCHASTIC_NUM_ROLLOUTS", 50),
             "stochastic_temperature": _env_float("GCN_PPO_HQ_STOCHASTIC_TEMPERATURE", 1.2),
-            "use_deadlock_controller": os.environ.get("GCN_PPO_HQ_USE_DEADLOCK_CONTROLLER", "1") == "1",
+            "use_deadlock_controller": _env_bool("GCN_PPO_HQ_USE_DEADLOCK_CONTROLLER", True),
         }
         for k, v in default_params.items():
             kwargs.setdefault(k, v)
@@ -296,32 +347,35 @@ class PetriNetGCNPPOProHQ(PetriNetGCNPPOPro):
 
 def main():
     base_dir = os.path.dirname(__file__)
-    out_path = os.path.join(base_dir, "results/Reference_ppo_outputs/class/case4-1.txt")
-    progress_path = os.path.join(base_dir, "results/Reference_ppo_outputs/class/case4-1.txt")
+    out_path = os.path.join(base_dir, "results/Reference_ppo_outputs/class/case1-9.txt")
+    progress_path = os.path.join(base_dir, "results/Reference_ppo_outputs/class/case1-9.txt")
     
     try:
         default_train_files = [ 
-                            "1-4-1.txt","1-4-2.txt","1-4-3.txt","1-4-4.txt",
-                            "3-2-1.txt","3-2-2.txt","3-2-3.txt","3-2-4.txt",
-                            "3-4-1.txt","3-4-2.txt","3-4-3.txt","3-4-4.txt",                 
+"1-1-1.txt","1-1-2.txt","1-1-3.txt","1-1-4.txt","1-1-5.txt","1-1-6.txt","1-1-7.txt","1-1-8.txt",
+
                                ]
 
         train_files = _env_list("GCN_PPO_HQ_TRAIN_FILES") or default_train_files
         # 训练文件搜索路径
         train_roots = [
+                    "resources/resources_new/train/class/case1/test"
                     # "resources/resources_new/train/class/case1/resources"
                     # "resources/resources_new/train/class/case2/resources"
                     # "resources/resources_new/train/class/case3/resources"
-                    "resources/resources_new/train/class/case4/resources"
+                    # "resources/resources_new/train/class/case4/resources"
                     # "resources/resources_new/train/class/case5/resources"
                         ]
-
-        eval_files = _env_list("GCN_PPO_HQ_EVAL_FILES")
-        eval_roots = ["resources/resources_new/family2/family-2-1",
-                       "resources/resources_new/family2/family-2-2",
-                       "resources/resources_new/family2/family-2-3",
-                       "resources/resources_new/family2/family-2-4",
-                       "resources/resources_new/family2/family-2-5"]
+        default_eval_files = [
+            ]
+        eval_files = _env_list("GCN_PPO_HQ_EVAL_FILES") or default_eval_files
+        eval_roots = [
+                    "resources/resources_new/train/class/case1/resources"
+                    #"resources/resources_new/train/class/case2/resources"
+                    # "resources/resources_new/train/class/case3/resources"
+                    # "resources/resources_new/train/class/case4/resources"
+                    # "resources/resources_new/train/class/case5/resources"
+                    ]
 
         env_pool = _load_env_pool(base_dir, train_files, train_roots)
         if not env_pool:
@@ -337,7 +391,9 @@ def main():
         with open(progress_path, "w", encoding="utf-8") as f:
             f.write("")
 
-        fast_mode = os.environ.get("GCN_PPO_HQ_FAST", "1") == "0"
+        # 修复：原写法 `"1" == "0"` 永远为 False，导致 fast_mode 永远关闭。
+        # 现按字面意义解析：默认 True；用户置 0/false 即可切换到完整训练模式。
+        fast_mode = _env_bool("GCN_PPO_HQ_FAST", True)
         env_count = len(env_pool)
         
         if fast_mode:
@@ -346,7 +402,7 @@ def main():
         else:
             base_steps = 10000 * env_count
             extra_steps = (complexity * 2000 + max_constrained_count * 3000) * env_count
-            max_train_steps = min(430080, max(50000, base_steps + extra_steps))
+            max_train_steps = min(307200, max(50000, base_steps + extra_steps))
             mode = "hq-full-generalization"
 
         line = "GCN-PPO Pro HQ mode: " + mode
@@ -397,7 +453,7 @@ def main():
             search_strategy="greedy",
             mixed_rollout=True,
             envs_per_epoch=4,
-            # use_deadlock_controller = False,
+            use_deadlock_controller = False,
         )
         print(
             "model_config="
@@ -410,19 +466,23 @@ def main():
         signature = build_signature(main_env["path"], main_env["context"])
         profile = build_profile(main_env["context"])
         #==========================================================================================
-        ckpt_path = checkpoint_path(base_dir, "Reference_checkpoint/class/case4-1", signature)
+        ckpt_path = checkpoint_path(base_dir, "Reference_checkpoint/class/case1-9", signature)
 
-        reuse_checkpoint = os.environ.get("GCN_PPO_HQ_REUSE", "0") == "1"
-        reuse_similar = os.environ.get("GCN_PPO_HQ_REUSE_SIMILAR", "1") == "1"
-        finetune_on_similar = os.environ.get("GCN_PPO_HQ_FINETUNE_ON_SIMILAR", "0") == "0"
+        reuse_checkpoint = _env_bool("GCN_PPO_HQ_REUSE", False)
+        reuse_similar = _env_bool("GCN_PPO_HQ_REUSE_SIMILAR", True)
+        # 修复：原 `"0" == "0"` 永远为 True，与命名语义相反；改为标准布尔解析。
+        finetune_on_similar = _env_bool("GCN_PPO_HQ_FINETUNE_ON_SIMILAR", False)
         custom_ckpt_path = os.environ.get("GCN_PPO_HQ_CHECKPOINT_PATH", "")
-        #custom_ckpt_path = "checkpoints/gcn_ppo_pro_hq_general_family_large_test2_recipe10d-13_d2204f24b4dace947ef1d718f56cfc5b090b2c09.pt"
-        finetune_from_custom = os.environ.get("GCN_PPO_HQ_FINETUNE_FROM_CUSTOM", "1") == "1"
-        
+        finetune_from_custom = _env_bool("GCN_PPO_HQ_FINETUNE_FROM_CUSTOM", True)
+
         # 模仿学习热启动参数
-        use_il_warmstart = os.environ.get("GCN_PPO_HQ_IL_WARMSTART", "1") == "0"
+        # 修复：原 `"1" == "0"` 永远为 False，IL 热启动几乎从未生效，
+        # 完全违反代码的命名意图。现统一使用 _env_bool。
+        use_il_warmstart = _env_bool("GCN_PPO_HQ_IL_WARMSTART", True)
         il_mode = normalize_il_mode(os.environ.get("GCN_PPO_HQ_IL_MODE", "bc"))
-        il_ckpt_path = os.environ.get("GCN_PPO_HQ_IL_CKPT_PATH", "d:\\dispatch_code\\BC+DAgger+PPO\\new_job\\python_port\\checkpoints\\bc_scene_1.pt").strip()
+        # 默认相对路径，避免硬编码绝对路径带来的可移植性问题
+        default_il_ckpt = os.path.join(base_dir, "checkpoints", "bc_scene_1.pt")
+        il_ckpt_path = os.environ.get("GCN_PPO_HQ_IL_CKPT_PATH", default_il_ckpt).strip()
         
         loaded_checkpoint = False
         checkpoint_mode = "none"
