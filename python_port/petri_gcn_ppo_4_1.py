@@ -1,6 +1,7 @@
 import random
 import threading
 import time
+import math
 from typing import Dict, List, Tuple, Any, Optional
 import os
 import sys
@@ -164,6 +165,9 @@ class PetriNetGCNPPOPro(AbstractSearch):
         self.minibatch_size = minibatch_size
         self.ppo_epochs = ppo_epochs
         self.initial_lr = lr
+        self.lr_schedule = str(kwargs.get("lr_schedule", "linear")).strip().lower()
+        self.lr_min_ratio = max(0.0, min(1.0, float(kwargs.get("lr_min_ratio", 1e-5 / max(lr, 1e-12)))))
+        self.lr_decay_horizon = max(1.0, float(kwargs.get("lr_decay_horizon", 1.0)))
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.eps_clip = eps_clip
@@ -629,6 +633,26 @@ class PetriNetGCNPPOPro(AbstractSearch):
             f"Best: {metrics['best_show']} | a_loss: {metrics['actor_loss']:5.2f} "
             f"c_loss: {metrics['critic_loss']:5.2f}{pool_text}{eval_pool_text}"
         )
+
+    def _scheduled_lr(self, progress: float) -> float:
+        """
+        根据训练进度计算当前学习率。
+
+        linear 保持旧行为；cosine 使用更平缓的余弦衰减，并通过
+        lr_decay_horizon 将完整衰减周期拉长，避免训练中后期学习率过早贴近下限。
+        """
+        progress = max(0.0, min(1.0, float(progress)))
+        floor_lr = self.initial_lr * self.lr_min_ratio
+
+        if self.lr_schedule == "constant":
+            return self.initial_lr
+
+        if self.lr_schedule == "cosine":
+            scaled_progress = min(progress / self.lr_decay_horizon, 1.0)
+            cosine = 0.5 * (1.0 + math.cos(math.pi * scaled_progress))
+            return floor_lr + (self.initial_lr - floor_lr) * cosine
+
+        return max(floor_lr, self.initial_lr * (1.0 - progress))
 
     def _set_to_initial(self):
         self.petri_net = self.initial_petri_net.clone()
@@ -1510,7 +1534,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
             eval_success, eval_makespan = self._evaluate_greedy()  # 评估模型
             
             progress = total_steps / self.max_train_steps
-            new_lr = max(1e-5, self.initial_lr * (1.0 - progress))
+            new_lr = self._scheduled_lr(progress)
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = new_lr
             
@@ -1598,6 +1622,9 @@ class PetriNetGCNPPOPro(AbstractSearch):
                 "eval_pool_configured": bool(self.eval_env_pool),
                 "eval_pool_due": eval_pool_due,
                 "learning_rate": new_lr,
+                "lr_schedule": self.lr_schedule,
+                "lr_min_ratio": self.lr_min_ratio,
+                "lr_decay_horizon": self.lr_decay_horizon,
                 "entropy_coef": self.current_entropy_coef,
                 "temperature": self.current_temperature,
                 "target_kl": self.target_kl,

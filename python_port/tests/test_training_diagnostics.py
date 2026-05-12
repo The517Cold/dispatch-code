@@ -68,6 +68,57 @@ def test_build_epoch_diagnostics_flags_anomalies():
     print("  [PASS] test_build_epoch_diagnostics_flags_anomalies")
 
 
+def test_env_choice_parsing():
+    from train_ppo_3 import _env_choice
+
+    key = "_PYTEST_LR_SCHEDULE"
+    os.environ[key] = "COSINE"
+    assert _env_choice(key, "linear", {"linear", "cosine"}) == "cosine"
+    os.environ[key] = "bad"
+    assert _env_choice(key, "linear", {"linear", "cosine"}) == "linear"
+    del os.environ[key]
+    assert _env_choice(key, "cosine", {"linear", "cosine"}) == "cosine"
+    print("  [PASS] test_env_choice_parsing")
+
+
+def test_set_global_seed_is_repeatable():
+    import random
+    import numpy as np
+    import torch
+    from train_ppo_3 import _set_global_seed
+
+    _set_global_seed(123)
+    first = (random.random(), float(np.random.rand()), float(torch.rand(1).item()))
+    _set_global_seed(123)
+    second = (random.random(), float(np.random.rand()), float(torch.rand(1).item()))
+    assert first == second
+    print("  [PASS] test_set_global_seed_is_repeatable")
+
+
+def test_cosine_lr_schedule_decays_more_slowly_than_linear():
+    from petri_gcn_ppo_4_1 import PetriNetGCNPPOPro
+
+    linear = object.__new__(PetriNetGCNPPOPro)
+    linear.initial_lr = 3e-4
+    linear.lr_schedule = "linear"
+    linear.lr_min_ratio = 1e-5 / 3e-4
+    linear.lr_decay_horizon = 1.0
+
+    cosine = object.__new__(PetriNetGCNPPOPro)
+    cosine.initial_lr = 3e-4
+    cosine.lr_schedule = "cosine"
+    cosine.lr_min_ratio = 0.35
+    cosine.lr_decay_horizon = 1.5
+
+    before = [linear._scheduled_lr(p) for p in (0.0, 0.5, 1.0)]
+    after = [cosine._scheduled_lr(p) for p in (0.0, 0.5, 1.0)]
+    assert after[0] == before[0] == 3e-4
+    assert after[1] > before[1], (before, after)
+    assert after[2] > before[2], (before, after)
+    assert after[2] > 1.5e-4, after
+    print(f"  [PASS] test_cosine_lr_schedule_decays_more_slowly_than_linear before={before} after={after}")
+
+
 def test_epoch_summary_writes_diagnostics():
     from train_ppo_3 import PetriNetGCNPPOProHQ
 
@@ -121,6 +172,9 @@ def main():
         test_derive_eval_files_from_train_files,
         test_parse_suite_summary,
         test_build_epoch_diagnostics_flags_anomalies,
+        test_env_choice_parsing,
+        test_set_global_seed_is_repeatable,
+        test_cosine_lr_schedule_decays_more_slowly_than_linear,
         test_epoch_summary_writes_diagnostics,
     ]
     failed = 0

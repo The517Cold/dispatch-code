@@ -3,6 +3,8 @@ import re
 import sys
 import time
 import traceback
+import random
+import numpy as np
 import torch
 
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -72,6 +74,26 @@ def _env_list(name):
     """从环境变量读取逗号分隔列表；忽略空白项。"""
     raw = os.environ.get(name, "").strip()
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _env_choice(name, default, allowed):
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in allowed:
+        return raw
+    print(f"Warning: 环境变量 {name}={raw!r} 不在 {sorted(allowed)} 中,使用默认 {default}", flush=True)
+    return default
+
+
+def _set_global_seed(seed):
+    if seed <= 0:
+        return
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def _derive_eval_files_from_train_files(train_files, suffix="20"):
@@ -367,6 +389,9 @@ class PetriNetGCNPPOProHQ(PetriNetGCNPPOPro):
 
             "gamma": _env_float("GCN_PPO_HQ_GAMMA", 0.999),
             "lr": _env_float("GCN_PPO_HQ_LR", 3e-4),
+            "lr_schedule": _env_choice("GCN_PPO_HQ_LR_SCHEDULE", "cosine", {"linear", "cosine", "constant"}),
+            "lr_min_ratio": _env_float("GCN_PPO_HQ_LR_MIN_RATIO", 0.35),
+            "lr_decay_horizon": _env_float("GCN_PPO_HQ_LR_DECAY_HORIZON", 1.5),
             # ★ 新增：L2正则化系数，抑制模型过拟合到特定训练网络的拓扑细节
             "weight_decay": _env_float("GCN_PPO_HQ_WEIGHT_DECAY", 1e-4), # 1e-5
             "steps_per_epoch": _env_int("GCN_PPO_HQ_STEPS_PER_EPOCH", 6144),  # 12288
@@ -507,6 +532,8 @@ class PetriNetGCNPPOProHQ(PetriNetGCNPPOPro):
 
 def main():
     base_dir = os.path.dirname(__file__)
+    seed = _env_int("GCN_PPO_HQ_SEED", 0)
+    _set_global_seed(seed)
     out_path = os.path.join(base_dir, "results/Reference_ppo_outputs/class/out/case2-7.txt")
     progress_path = os.path.join(base_dir, "results/Reference_ppo_outputs/class/progress/case2-7.txt")
     
@@ -580,9 +607,15 @@ def main():
             extra_steps = (complexity * 2000 + max_constrained_count * 3000) * env_count
             max_train_steps = min(491520, max(50000, base_steps + extra_steps))
             mode = "hq-full-generalization"
+        max_train_steps_override = _env_int("GCN_PPO_HQ_MAX_TRAIN_STEPS", 0)
+        if max_train_steps_override > 0:
+            max_train_steps = max_train_steps_override
+            mode += "-override"
 
         line = "GCN-PPO Pro HQ mode: " + mode
         print(line, flush=True)
+        if seed > 0:
+            print(f"seed={seed}", flush=True)
             
         schedule_line = (
             f"schedule max_train_steps={max_train_steps} "
@@ -638,7 +671,9 @@ def main():
             "model_config="
             + f"lambda_p:{search.model.actor_net.lambda_p if hasattr(search.model.actor_net, 'lambda_p') else 'na'},"
             + f"steps_per_epoch:{search.steps_per_epoch},minibatch_size:{search.minibatch_size},"
-            + f"ppo_epochs:{search.ppo_epochs},beam_width:{search.beam_width},beam_depth:{search.beam_depth}",
+            + f"ppo_epochs:{search.ppo_epochs},beam_width:{search.beam_width},beam_depth:{search.beam_depth},"
+            + f"lr_schedule:{search.lr_schedule},lr_min_ratio:{search.lr_min_ratio},"
+            + f"lr_decay_horizon:{search.lr_decay_horizon}",
             flush=True
         )
 
