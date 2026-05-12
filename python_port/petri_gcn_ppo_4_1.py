@@ -1,5 +1,6 @@
 import random
 import threading
+import time
 from typing import Dict, List, Tuple, Any, Optional
 import os
 import sys
@@ -46,14 +47,14 @@ class RolloutBuffer:
     """
     经验回放缓冲区。
 
-    重要修复（v2）：除 place_features 外，新增 transition_states 列表用于保存
-    每一步的 transition 输入特征（启用标志、控制器特征等）。在原版中，PPO 更新
+    重要修复(v2):除 place_features 外，新增 transition_states 列表用于保存
+    每一步的 transition 输入特征(启用标志、控制器特征等).在原版中,PPO 更新
     时仅传入 place_features → 模型用常量 transition_seed 替代 → 新策略 logits
     与采集时用的旧策略 logits 输入分布不同 → PPO 重要性采样比率失真，整个 PPO
     目标函数失效。该字段必须与 states 同步增删。
 
-    同时新增 last_value 字段：collect 结束时若末步非终止，应基于末状态的价值
-    估计进行 bootstrap，避免 GAE 在截断尾部偏差为 0。
+    同时新增 last_value 字段:collect 结束时若末步非终止，应基于末状态的价值
+    估计进行 bootstrap,避免 GAE 在截断尾部偏差为 0。
     """
 
     def __init__(self):
@@ -618,6 +619,17 @@ class PetriNetGCNPPOPro(AbstractSearch):
         if self.verbose:
             print(text, flush=True)
 
+    def _log_epoch_summary(self, metrics: Dict[str, Any]):
+        pool_text = metrics.get("pool_text", "")
+        eval_pool_text = metrics.get("eval_pool_text", "")
+        self._log(
+            f"Env: {metrics['env_name']} | Ep {metrics['epoch_idx']:03d} | "
+            f"Steps: {metrics['total_steps']}/{metrics['max_train_steps']} | "
+            f"Avg R: {metrics['avg_reward']:6.1f} | Eval: {metrics['eval_show']} | "
+            f"Best: {metrics['best_show']} | a_loss: {metrics['actor_loss']:5.2f} "
+            f"c_loss: {metrics['critic_loss']:5.2f}{pool_text}{eval_pool_text}"
+        )
+
     def _set_to_initial(self):
         self.petri_net = self.initial_petri_net.clone()
 
@@ -789,9 +801,9 @@ class PetriNetGCNPPOPro(AbstractSearch):
 
     def _encode_step_inputs(self, marking):
         """
-        统一封装：编码当前 marking 为 PetriRepresentationInput，
+        统一封装:编码当前 marking 为 PetriRepresentationInput,
         并返回 (place_features, transition_features, encoded_obj)。
-        encoded_obj 可直接传给 self.model；place/transition 单独存入 buffer
+        encoded_obj 可直接传给 self.model;place/transition 单独存入 buffer
         以便 PPO 更新阶段重建相同的输入分布。
         """
         encoded = self.encoder.encode(marking)
@@ -821,15 +833,15 @@ class PetriNetGCNPPOPro(AbstractSearch):
         收集经验回放。
 
         v2 改进点（与 PPO 正确性密切相关）：
-          1. 同时保存 place_features 与 transition_features 到 buffer，确保
+          1. 同时保存 place_features 与 transition_features 到 buffer,确保
              PPO 更新阶段计算 π_new(a|s) 时输入与 π_old(a|s) 完全一致，
              重要性采样比率 (π_new/π_old) 才有意义。
-          2. 采样温度与 logprob 记录使用同一分布 (scaled_logits)，使 ratio
-             含义一致；_update_ppo 中也使用同一温度计算新 logprob。
+          2. 采样温度与 logprob 记录使用同一分布 (scaled_logits),使 ratio
+             含义一致;_update_ppo 中也使用同一温度计算新 logprob。
           3. 末状态非终止时调用 _bootstrap_value 计算 V(s_last)，写入
-             buffer.last_value，供 _compute_gae 截断 bootstrap。
-          4. 收集循环中复用 cache，避免重复计算 mask；调用 Categorical 时
-             仅构造一次，节省 CPU 时间。
+             buffer.last_value,供 _compute_gae 截断 bootstrap。
+          4. 收集循环中复用 cache,避免重复计算 mask;调用 Categorical 时
+             仅构造一次,节省 CPU 时间。
 
         :param num_steps: 收集的步数
         :return: (实际收集步数, 各回合累计奖励, 成功回合的 makespan 列表)
@@ -1092,6 +1104,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
         self._last_mixed_losses = {
             "a_loss": total_a_loss / max(1, total_updates),
             "c_loss": total_c_loss / max(1, total_updates),
+            "kl": kl if total_updates > 0 else 0.0,
             "updates": total_updates,
         }
 
@@ -1162,20 +1175,20 @@ class PetriNetGCNPPOPro(AbstractSearch):
 
         v2 改进：
           1. 用 next_nonterminal 显式地处理终止位 → 严格遵循 Schulman et al. 2016 公式。
-          2. 截断尾部使用调用方提供的 last_value (V(s_T)) 进行 bootstrap，
-             不再无条件视为 0，消除截断引入的尾部偏差。
-          3. 直接预分配数组 + 倒序填充，避免原版 list.insert(0, …) 带来的
-             O(N²) 复制开销，长 rollout 下显著加速。
+          2. 截断尾部使用调用方提供的 last_value (V(s_T)) 进行 bootstrap,
+             不再无条件视为 0,消除截断引入的尾部偏差。
+          3. 直接预分配数组 + 倒序填充,避免原版 list.insert(0, …) 带来的
+             O(N²) 复制开销,长 rollout 下显著加速。
 
         Args:
             rewards: 奖励列表
             values: 状态价值列表 (V(s_i))
-            is_terminals: 是否终止状态列表（True 表示该步结束了 episode）
+            is_terminals: 是否终止状态列表(True 表示该步结束了 episode)
             last_value: 末步的 bootstrap 价值 V(s_T)；若末步为终止，传 0 即可。
 
         Returns:
-            advantages: 优势值列表（与输入同长）
-            returns: 回报列表（advantages + values）
+            advantages: 优势值列表(与输入同长)
+            returns: 回报列表(advantages + values)
         """
         n = len(rewards)
         if n == 0:
@@ -1196,12 +1209,12 @@ class PetriNetGCNPPOPro(AbstractSearch):
         """
         执行 PPO 更新。v2 关键修复：
 
-          1. 同时构造 place + transition 输入张量（PetriRepresentationInput），
+          1. 同时构造 place + transition 输入张量(PetriRepresentationInput),
              与采集阶段输入完全对齐——这是修复 PPO 比率失真的关键点。
-          2. 计算新 logprob/熵时使用与采集相同的温度（self.current_temperature），
+          2. 计算新 logprob/熵时使用与采集相同的温度(self.current_temperature),
              确保 ratio = π_new / π_old 仅反映策略参数变化。
           3. 调用 _compute_gae 时传入 buffer.last_value 作为截断 bootstrap。
-          4. 当采集阶段任一步出现 mask 全 0（无可行动作）时，记录的 logprob=0
+          4. 当采集阶段任一步出现 mask 全 0(无可行动作)时,记录的 logprob=0
              对应的样本会通过 is_valid_state 过滤掉，避免污染策略梯度。
         """
         if not self.buffer.states:
@@ -1401,7 +1414,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
 
         Args:
             il_checkpoint_path: 显式指定的 IL checkpoint 路径，为空时自动搜索
-            il_mode: IL 模式，可选 "auto"（优先 DAgger，其次 BC）、"bc"、"dagger"
+            il_mode: IL 模式，可选 "auto"（优先 DAgger,其次 BC),"bc","dagger"
 
         Returns:
             bool: 是否成功进行了 IL 热启动
@@ -1472,6 +1485,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
         epoch_idx = 0
         
         while total_steps < self.max_train_steps:
+            epoch_start = time.perf_counter()
             epoch_idx += 1
             progress = total_steps / self.max_train_steps
             
@@ -1480,6 +1494,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
                 mixed_losses = getattr(self, "_last_mixed_losses", {})
                 a_loss = mixed_losses.get("a_loss", 0.0)
                 c_loss = mixed_losses.get("c_loss", 0.0)
+                kl = mixed_losses.get("kl", 0.0)
             else:
                 if self.env_pool and len(self.env_pool) > 1:
                     current_env = self._select_training_env(epoch_idx)
@@ -1509,6 +1524,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
             best_show = self.best_records[self.current_env_name]["makespan"] if self.best_records[self.current_env_name]["makespan"] < 2**31 - 1 else -1
             eval_show = eval_makespan if eval_success else "Fail"
             pool_text = ""
+            pool_metrics = None
             if self.env_pool and len(self.env_pool) > 1:
                 need_pool_eval = epoch_idx == 1 or epoch_idx % self.pool_eval_interval == 0 or total_steps >= self.max_train_steps
                 if need_pool_eval:
@@ -1543,8 +1559,11 @@ class PetriNetGCNPPOPro(AbstractSearch):
             # ★ 独立评估池（eval_env_pool）监控：定期对结构相似的测试网络进行贪婪评估，
             # 跟踪泛化能力的变化趋势，提前发现过拟合。
             eval_pool_text = ""
+            eval_metrics = None
+            eval_pool_due = False
             if self.eval_env_pool and self.eval_pool_interval > 0:
                 need_eval_pool = epoch_idx % self.eval_pool_interval == 0 or total_steps >= self.max_train_steps
+                eval_pool_due = need_eval_pool
                 if need_eval_pool:
                     eval_metrics = self._evaluate_pool(self.eval_env_pool)
                     self.extra_info["evalPoolSuccessRate"] = eval_metrics["success_rate"]
@@ -1555,12 +1574,36 @@ class PetriNetGCNPPOPro(AbstractSearch):
                         f" | EvalPool Avg: {eval_avg_show}"
                     )
 
-            # 每epoch打印一次日志
-            self._log(
-                f"Env: {self.current_env_name} | Ep {epoch_idx:03d} | Steps: {total_steps}/{self.max_train_steps} | "
-                f"Avg R: {avg_reward:6.1f} | Eval: {eval_show} | Best: {best_show} | "
-                f"a_loss: {a_loss:5.2f} c_loss: {c_loss:5.2f}{pool_text}{eval_pool_text}"
-            )
+            # 每个训练 epoch 结束后统一输出日志；子类可覆盖该钩子扩展格式，
+            # 不改变训练/评估流程，也不引入额外模型前向计算。
+            self._log_epoch_summary({
+                "env_name": self.current_env_name,
+                "epoch_idx": epoch_idx,
+                "total_steps": total_steps,
+                "max_train_steps": self.max_train_steps,
+                "steps_collected": steps_collected,
+                "avg_reward": avg_reward,
+                "train_loss": a_loss + self.value_loss_coef * c_loss,
+                "actor_loss": a_loss,
+                "critic_loss": c_loss,
+                "kl": kl,
+                "eval_success": eval_success,
+                "eval_makespan": eval_makespan,
+                "eval_show": eval_show,
+                "best_show": best_show,
+                "pool_text": pool_text,
+                "eval_pool_text": eval_pool_text,
+                "pool_metrics": pool_metrics,
+                "eval_pool_metrics": eval_metrics,
+                "eval_pool_configured": bool(self.eval_env_pool),
+                "eval_pool_due": eval_pool_due,
+                "learning_rate": new_lr,
+                "entropy_coef": self.current_entropy_coef,
+                "temperature": self.current_temperature,
+                "target_kl": self.target_kl,
+                "epoch_elapsed_sec": time.perf_counter() - epoch_start,
+                "episode_count": len(ep_rewards),
+            })
 
         self.is_trained = True
 
