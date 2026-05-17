@@ -615,6 +615,7 @@ class TTPPNByTokenWithResTime(PetriNet):
         self.min_delay_t = min_delay_t
         self.capacity = capacity
         self.residence_time = residence_time
+        self.max_residence_time = residence_time
         self.t_list = [[] for _ in range(len(pre))]
         self.p_list = [[] for _ in range(len(pre[0]))]
         self.pa_list = [[] for _ in range(len(pre[0]))]
