@@ -120,6 +120,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
         reward_residence_penalty_max: float = 30.0,  # 驻留时间超限最大惩罚
         reward_residence_safe_bonus: float = 0.5,  # 驻留时间安全时的小额奖励
         reward_mobility_weight: float = 0.3,  # 动作空间收缩惩罚权重
+        reward_qtime_penalty_coeff: float = 0.5,  # q-time超限惩罚系数
         beam_width: int = 100,  # 搜索宽度
         beam_depth: int = 800,  # 搜索深度
         search_depth: int =800, # 搜索深度
@@ -191,6 +192,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
         self.reward_residence_penalty_max = reward_residence_penalty_max
         self.reward_residence_safe_bonus = reward_residence_safe_bonus
         self.reward_mobility_weight = reward_mobility_weight
+        self.reward_qtime_penalty_coeff = reward_qtime_penalty_coeff
         
         self.beam_width = beam_width
         self.beam_depth = beam_depth
@@ -491,7 +493,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
 
         v2 改进：
           - 当目标环境与当前环境同名时，仅刷新 marking / mask cache 等轻量字段，
-            避免重复重建 encoder / model / optimizer / deadlock_controller，
+            避免重复重建 encoder / model / optimizer / deadlock_controller,
             显著降低多 env 训练时的环境切换开销（最高可减少 70% 切换时间）。
 
         Args:
@@ -638,7 +640,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
         """
         根据训练进度计算当前学习率。
 
-        linear 保持旧行为；cosine 使用更平缓的余弦衰减，并通过
+        linear 保持旧行为;cosine 使用更平缓的余弦衰减，并通过
         lr_decay_horizon 将完整衰减周期拉长，避免训练中后期学习率过早贴近下限。
         """
         progress = max(0.0, min(1.0, float(progress)))
@@ -820,7 +822,28 @@ class PetriNetGCNPPOPro(AbstractSearch):
                     penalty_for_worse = degradation_ratio * 80.0
                     goal_bonus = max(self.reward_goal_bonus * 0.1, self.reward_goal_bonus - penalty_for_worse)
 
-        reward = step_reward + residence_reward - mobility_penalty + goal_bonus
+        qtime_penalty = 0.0
+        if bool(getattr(next_marking, "over_max_residence_time", False)):
+            petri_net = self.petri_net
+            if hasattr(petri_net, "qtime") and hasattr(petri_net, "qtime_places"):
+                qtime_val = petri_net.qtime
+                if qtime_val < 2 ** 31 - 1:
+                    qtime_map = getattr(next_marking, "qtime_map", {})
+                    max_excess = 0.0
+                    for place_idx, is_qt in enumerate(petri_net.qtime_places):
+                        if not is_qt:
+                            continue
+                        for token in next_marking.t_info[place_idx]:
+                            tid = token.get_id()
+                            if tid in qtime_map:
+                                elapsed = next_marking.get_prefix() - qtime_map[tid]
+                                excess = float(elapsed - qtime_val)
+                                if excess > 0:
+                                    max_excess = max(max_excess, excess)
+                    if max_excess > 0:
+                        qtime_penalty = self.reward_qtime_penalty_coeff * (max_excess / self.reward_time_scale) * self.reward_residence_penalty_max
+
+        reward = step_reward + residence_reward - mobility_penalty - qtime_penalty + goal_bonus
         return next_marking, reward, done, deadlock
 
     def _encode_step_inputs(self, marking):
@@ -1231,7 +1254,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
 
     def _update_ppo(self, precomputed_advantages=None) -> Tuple[float, float, float]:
         """
-        执行 PPO 更新。v2 关键修复：
+        执行 PPO 更新.v2 关键修复：
 
           1. 同时构造 place + transition 输入张量(PetriRepresentationInput),
              与采集阶段输入完全对齐——这是修复 PPO 比率失真的关键点。

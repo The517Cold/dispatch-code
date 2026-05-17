@@ -11,7 +11,7 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from petri_net_io.utils.net_loader import load_petri_net_context, build_ttpn_with_residence
+from petri_net_io.utils.net_loader import load_petri_net_context, build_ttpn_with_residence, build_ttpn_by_token_with_res_time
 from petri_net_io.utils.checkpoint_selector import (
     build_signature,
     build_profile,
@@ -140,7 +140,11 @@ def _load_env_pool(base_dir, file_names, roots):
             continue
 
         context = load_petri_net_context(net_path)
-        petri_net = build_ttpn_with_residence(context)
+        use_by_token = os.environ.get("GCN_PPO_HQ_USE_BY_TOKEN", "0").strip() == "1"
+        if use_by_token:
+            petri_net = build_ttpn_by_token_with_res_time(context)
+        else:
+            petri_net = build_ttpn_with_residence(context)
         complexity_score = max(len(context["pre"]), len(context["pre"][0]))
         constrained_count = sum(1 for val in context["max_residence_time"] if val < 2 ** 31 - 1)
         env_pool.append({
@@ -388,24 +392,25 @@ class PetriNetGCNPPOProHQ(PetriNetGCNPPOPro):
             "extra_p2t_rounds": _env_int("GCN_PPO_HQ_EXTRA_P2T_ROUNDS", 6),
 
             "gamma": _env_float("GCN_PPO_HQ_GAMMA", 0.999),
+            "eps_clip":_env_float("GCN_PPO_HQ_eps_clip",0.2), # ppo裁剪系数
             "lr": _env_float("GCN_PPO_HQ_LR", 3e-4),
             "lr_schedule": _env_choice("GCN_PPO_HQ_LR_SCHEDULE", "cosine", {"linear", "cosine", "constant"}),
             "lr_min_ratio": _env_float("GCN_PPO_HQ_LR_MIN_RATIO", 0.35),
             "lr_decay_horizon": _env_float("GCN_PPO_HQ_LR_DECAY_HORIZON", 1.5),
-            # ★ 新增：L2正则化系数，抑制模型过拟合到特定训练网络的拓扑细节
+            # L2正则化系数，抑制模型过拟合到特定训练网络的拓扑细节
             "weight_decay": _env_float("GCN_PPO_HQ_WEIGHT_DECAY", 1e-4), # 1e-5
             "steps_per_epoch": _env_int("GCN_PPO_HQ_STEPS_PER_EPOCH", 6144),  # 12288
             "minibatch_size": _env_int("GCN_PPO_HQ_MINIBATCH_SIZE", 128),
-            "ppo_epochs": _env_int("GCN_PPO_HQ_PPO_EPOCHS", 4),  # ppo更新轮数
-            "target_kl": _env_float("GCN_PPO_HQ_TARGET_KL", 0.07),
+            "ppo_epochs": _env_int("GCN_PPO_HQ_PPO_EPOCHS", 6),  # ppo更新轮数,4
+            "target_kl": _env_float("GCN_PPO_HQ_TARGET_KL", 0.005), # 0.07
 
-            "entropy_coef_start": _env_float("GCN_PPO_HQ_ENTROPY_START", 0.32), #0.25
-            "entropy_coef_end": _env_float("GCN_PPO_HQ_ENTROPY_END", 0.18),
+            "entropy_coef_start": _env_float("GCN_PPO_HQ_ENTROPY_START", 0.5), #0.32
+            "entropy_coef_end": _env_float("GCN_PPO_HQ_ENTROPY_END", 0.10),#0.2
 
             "temperature_start": _env_float("GCN_PPO_HQ_TEMPERATURE_START", 2.3),# 影响动作分布
             "temperature_end": _env_float("GCN_PPO_HQ_TEMPERATURE_END", 1.2),
 
-            # ★ 修正：原值1500会被全局clip到100，使目标奖励信号完全失效。
+            # 原值1500会被全局clip到100，使目标奖励信号完全失效。
             # 调小为150后，目标奖励可以完整传递，makespan改进也能产生有效梯度信号。
             "reward_goal_bonus": _env_float("GCN_PPO_HQ_REWARD_GOAL", 150.0),
             "reward_deadlock_penalty": _env_float("GCN_PPO_HQ_REWARD_DEADLOCK", 90.0),
@@ -416,6 +421,7 @@ class PetriNetGCNPPOProHQ(PetriNetGCNPPOPro):
             "reward_residence_penalty_max": _env_float("GCN_PPO_HQ_RESIDENCE_PENALTY_MAX", 30.0),
             "reward_residence_safe_bonus": _env_float("GCN_PPO_HQ_RESIDENCE_SAFE_BONUS", 0.5),
             "reward_mobility_weight": _env_float("GCN_PPO_HQ_MOBILITY_WEIGHT", 0.3),
+            "reward_qtime_penalty_coeff": _env_float("GCN_PPO_HQ_QTIME_PENALTY_COEFF", 0.5),
 
             "beam_width": _env_int("GCN_PPO_HQ_BEAM_WIDTH", 100),
             "beam_depth": _env_int("GCN_PPO_HQ_BEAM_DEPTH", 800),
@@ -423,11 +429,10 @@ class PetriNetGCNPPOProHQ(PetriNetGCNPPOPro):
             "pool_eval_interval": _env_int("GCN_PPO_HQ_POOL_EVAL_INTERVAL", 4),  # 每4个epoch评估一次
             "curriculum_epochs": _env_int("GCN_PPO_HQ_CURRICULUM_EPOCHS", 4),  # 预热阶段epoch数
 
-            # ★ 新增：eval_env_pool 独立评估间隔（0=禁用；通过实例属性传入，不进参数字典）
+            # eval_env_pool 独立评估间隔（0=禁用；通过实例属性传入，不进参数字典）
             "mask_cache_limit": _env_int("GCN_PPO_HQ_MASK_CACHE_LIMIT", 40000),
             "mixed_rollout": _env_bool("GCN_PPO_HQ_MIXED_ROLLOUT", True),
             "cross_env_gae": _env_bool("GCN_PPO_HQ_CROSS_ENV_GAE", True),
-            # ★ 修复：原 `"0" == "0"` 写法恒为 True 与命名相反；现按字面语义解析。
             "async_collection": _env_bool("GCN_PPO_HQ_ASYNC_COLLECTION", False),
             "envs_per_epoch": _env_int("GCN_PPO_HQ_ENVS_PER_EPOCH", 4),
             "dynamic_curriculum": _env_bool("GCN_PPO_HQ_DYNAMIC_CURRICULUM", True),
@@ -534,14 +539,18 @@ def main():
     base_dir = os.path.dirname(__file__)
     seed = _env_int("GCN_PPO_HQ_SEED", 0)
     _set_global_seed(seed)
-    out_path = os.path.join(base_dir, "results/Reference_ppo_outputs/class/out/case2-7.txt")
-    progress_path = os.path.join(base_dir, "results/Reference_ppo_outputs/class/progress/case2-7.txt")
+    out_path = os.path.join(base_dir, "results/Reference_ppo_outputs/class/out/case1-12.txt")
+    progress_path = os.path.join(base_dir, "results/Reference_ppo_outputs/class/progress/case1-12.txt")
     
     try:
         default_train_files = [ 
 
-"1-2-1.txt","1-2-2.txt","1-2-3.txt","1-2-4.txt","1-2-5.txt","1-2-6.txt","1-2-7.txt","1-2-8.txt",
-"3-1-1.txt","3-1-2.txt","3-1-3.txt","3-1-4.txt","3-1-5.txt","3-1-6.txt","3-1-7.txt","3-1-8.txt",
+"1-1-1.txt","1-1-2.txt","1-1-3.txt","1-1-4.txt","1-1-5.txt","1-1-6.txt","1-1-7.txt","1-1-8.txt",
+"2-1-1.txt","2-1-2.txt","2-1-3.txt","2-1-4.txt","2-1-5.txt","2-1-6.txt","2-1-7.txt","2-1-8.txt",
+"2-2-1.txt","2-2-2.txt","2-2-3.txt","2-2-4.txt","2-2-5.txt","2-2-6.txt","2-2-7.txt","2-2-8.txt",
+"2-3-1.txt","2-3-2.txt","2-3-3.txt","2-3-4.txt","2-3-5.txt","2-3-6.txt","2-3-7.txt","2-3-8.txt",
+"2-4-1.txt","2-4-2.txt","2-4-3.txt","2-4-4.txt","2-4-5.txt","2-4-6.txt","2-4-7.txt","2-4-8.txt",  
+
 
                                ]
 
@@ -549,28 +558,26 @@ def main():
         # 训练文件搜索路径
         train_roots = [
                     # "resources/resources_new/train/class/case1/test"
-                    # "resources/resources_new/train/class/case1/resources"
+                    "resources/resources_new/train/class/case1/resources"
                     # "resources/resources_new/train/class/case2/resources"
-                    "resources/resources_new/train/class/case2-1/resources"
+                    # "resources/resources_new/train/class/case2-1/resources"
                     # "resources/resources_new/train/class/case3/resources"
                     # "resources/resources_new/train/class/case4/resources"
                     # "resources/resources_new/train/class/case5/resources"
                         ]
-        auto_eval_enabled = _env_bool("GCN_PPO_HQ_AUTO_EVAL", True)
+        auto_eval_enabled = _env_bool("GCN_PPO_HQ_AUTO_EVAL", False)
         auto_eval_suffix = os.environ.get("GCN_PPO_HQ_AUTO_EVAL_SUFFIX", "20").strip() or "20"
-        default_eval_files = _derive_eval_files_from_train_files(train_files, auto_eval_suffix) if auto_eval_enabled else []
+        default_eval_files = _derive_eval_files_from_train_files(train_files, auto_eval_suffix) if auto_eval_enabled else [
+            "1-1-e1.txt","1-1-e2.txt","2-1-e1.txt","2-1-e2.txt",
+            "2-2-e1.txt","2-2-e2.txt","2-3-e1.txt","2-3-e2.txt",
+            "2-4-e1.txt","2-4-e2.txt"]
         eval_files = _env_list("GCN_PPO_HQ_EVAL_FILES") or default_eval_files
         eval_roots = [
-                    "resources/resources_new/test/class_test/case1",
-                    "resources/resources_new/test/class_test/case2",
-                    "resources/resources_new/test/class_test/case3",
-                    "resources/resources_new/test/class_test/case4",
-                    "resources/resources_new/test/class_test/case5",
-                    "resources/resources_new/train/class/case1/resources",
-                    "resources/resources_new/train/class/case2/resources",
-                    "resources/resources_new/train/class/case3/resources",
-                    "resources/resources_new/train/class/case4/resources",
-                    "resources/resources_new/train/class/case5/resources",
+                    "resources/resources_new/test/class_test/eval_case1",
+                    "resources/resources_new/test/class_test/eval_case2",
+                    "resources/resources_new/test/class_test/eval_case3",
+                    "resources/resources_new/test/class_test/eval_case4",
+                    "resources/resources_new/test/class_test/eval_case5",
                     ]
 
         env_pool = _load_env_pool(base_dir, train_files, train_roots)
@@ -605,7 +612,7 @@ def main():
         else:
             base_steps = 10000 * env_count
             extra_steps = (complexity * 2000 + max_constrained_count * 3000) * env_count
-            max_train_steps = min(491520, max(50000, base_steps + extra_steps))
+            max_train_steps = min(983040, max(50000, base_steps + extra_steps))
             mode = "hq-full-generalization"
         max_train_steps_override = _env_int("GCN_PPO_HQ_MAX_TRAIN_STEPS", 0)
         if max_train_steps_override > 0:
@@ -680,7 +687,7 @@ def main():
         signature = build_signature(main_env["path"], main_env["context"])
         profile = build_profile(main_env["context"])
         #==========================================================================================
-        ckpt_path = checkpoint_path(base_dir, "Reference_checkpoint/class/case2-7", signature)
+        ckpt_path = checkpoint_path(base_dir, "Reference_checkpoint/class/case1-12", signature)
 
         reuse_checkpoint = _env_bool("GCN_PPO_HQ_REUSE", False)
         reuse_similar = _env_bool("GCN_PPO_HQ_REUSE_SIMILAR", True)
