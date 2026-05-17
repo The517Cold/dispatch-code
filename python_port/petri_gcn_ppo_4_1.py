@@ -19,6 +19,7 @@ try:
     from ..search.rl_env_semantics import enabled_transitions_for_marking
     from ..representation.features import PetriRepresentationInput, PetriStateEncoderEnhanced
     from ...petri_net_io.utils.checkpoint_selector import load_compatible_state
+    from ..marking import Token
 except ImportError:
     # 该文件实际位于 python_port/ 根目录下，仅有一层向上即可命中 python_port/。
     # 原代码使用 ".."*3，会把 D:\dispatch_code 这种祖父目录加入 sys.path，
@@ -38,6 +39,7 @@ except ImportError:
     from petri_net_platform.search.rl_env_semantics import enabled_transitions_for_marking
     from petri_net_platform.representation.features import PetriRepresentationInput, PetriStateEncoderEnhanced
     from petri_net_io.utils.checkpoint_selector import load_compatible_state
+    from petri_net_platform.marking import Token
 
 """
     这个文档的代码是多网训练但是没有加专家序列的版本
@@ -469,14 +471,29 @@ class PetriNetGCNPPOPro(AbstractSearch):
             4. 状态的定时变迁信息 (t_info)-----类型: Tuple[Tuple[int, ...], ...]
             5. 状态的驻留时间信息 (residence_time_info)-----类型: Tuple[Tuple[int, ...], ...]
         """
-        timed_info = tuple(tuple(int(v) for v in place_tokens) for place_tokens in getattr(marking, "t_info", []))
-        residence_info = tuple(tuple(int(v) for v in place_tokens) for place_tokens in getattr(marking, "residence_time_info", []))
+        def _token_to_int(v):
+            if isinstance(v, Token):
+                return v.timer
+            return int(v)
+
+        timed_info = tuple(tuple(_token_to_int(v) for v in place_tokens) for place_tokens in getattr(marking, "t_info", []))
+
+        def _res_to_int(v):
+            if isinstance(v, Token):
+                return v.residence_time
+            return int(v)
+
+        raw_res = getattr(marking, "residence_time_info", None)
+        if raw_res is None:
+            raw_res_info = tuple(tuple(_res_to_int(v) for v in place_tokens) for place_tokens in getattr(marking, "t_info", []))
+        else:
+            raw_res_info = tuple(tuple(int(v) for v in place_tokens) for place_tokens in raw_res)
         return (
             tuple(int(v) for v in marking.get_p_info()),
             int(marking.get_prefix()),
             bool(getattr(marking, "over_max_residence_time", False)),
             timed_info,
-            residence_info,
+            raw_res_info,
         )
 
     def switch_environment(self, env_dict):
