@@ -6,7 +6,7 @@ import time
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
-from python_port.petri_net_io.utils.net_loader import load_petri_net_context, build_ttpn_with_residence
+from python_port.petri_net_io.utils.net_loader import load_petri_net_context, build_ttpn_with_residence, build_ttpn_by_token_with_res_time
 from python_port.petri_net_platform.search.a_star import AStar, OpenTable, EvaluationFunction, CreateEFLine
 
 
@@ -18,7 +18,7 @@ def main():
         os.makedirs(os.path.dirname(progress_path), exist_ok=True)
         max_search_seconds = float(os.environ.get("A_STAR_MAX_SECONDS", "60"))
         build_efline = os.environ.get("A_STAR_BUILD_EFLINE", "0") == "1"
-        path = os.path.join(base_dir, "resources/resources_new/train/family1", "1-5-16.txt")
+        path = os.path.join(base_dir, "resources/resources_new/test/class_test/case1", "1-1-1.txt")
         if not os.path.exists(path):
             msg = "ERROR\nmissing input file: " + path + "\n请将资源文件放到 python_port/resources"
             with open(out_path, "w", encoding="utf-8") as f:
@@ -32,6 +32,7 @@ def main():
         end = context["end"]
         a_matrix = context["a_matrix"]
         petri_net = build_ttpn_with_residence(context)
+        # petri_net = build_ttpn_by_token_with_res_time(context)
         with open(progress_path, "w", encoding="utf-8") as f:
             f.write("")
         start_line = "AStar started"
@@ -76,9 +77,23 @@ def main():
             print(end_line, flush=True)
             return
         trans = result.get_trans()
-        trans_line = "trans:" + "->".join(str(t) for t in trans) if trans else "trans:"
+        t_map_v = getattr(context.get("matrix_translator"), "t_map_v", {})
+        trans_names = [str(t_map_v.get(t, t)) for t in trans] if trans and t_map_v else [str(t) for t in trans]
+        trans_line = "trans:" + "->".join(trans_names) if trans else "trans:"
         markings = result.get_markings()
         makespan = markings[-1].get_prefix() if markings else 0
+        
+        print("\n=== 变迁发射时间戳追踪 ===")
+        if trans and markings:
+            print(f"初始时间戳: 0")
+            for i, (t, marking) in enumerate(zip(trans, markings[1:]), 1):
+                timestamp = marking.get_prefix()
+                trans_name = t_map_v.get(t, t) if t_map_v else t
+                print(f"步骤{i}: 发射变迁 {trans_name} → 时间戳: {timestamp}")
+            print(f"最终makespan: {makespan}")
+        else:
+            print("无变迁序列或标识序列")
+        print("========================\n")
         extra_info = search.get_extra_info()
         out = "elapsed:" + format(elapsed, ".6f") + "s\n" + trans_line + "\n" + "makespan:" + str(makespan) + "\n" + "extra:" + str(extra_info) + "\n"
         with open(out_path, "w", encoding="utf-8") as f:

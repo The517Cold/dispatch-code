@@ -123,9 +123,11 @@ class PetriNetGCNPPOPro(AbstractSearch):
         reward_residence_safe_bonus: float = 0.5,  # 驻留时间安全时的小额奖励
         reward_mobility_weight: float = 0.3,  # 动作空间收缩惩罚权重
         reward_qtime_penalty_coeff: float = 0.5,  # q-time超限惩罚系数
+        reward_entry_bonus: float = 5.0,  # 入片激励奖励
+        reward_entry_decay: float = 0.85,  # 入片激励衰减系数（每入一片衰减一次）
         beam_width: int = 100,  # 搜索宽度
         beam_depth: int = 800,  # 搜索深度
-        search_depth: int =800, # 搜索深度
+        search_depth: int = 1400, # 搜索深度
         search_strategy: str = "beam",  # 搜索策略: "beam"、"greedy" 或 "stochastic"
         stochastic_num_rollouts: int = 50,  # 随机采样策略的轨迹数量
         stochastic_temperature: float = 1.2,  # 随机采样策略的温度系数
@@ -162,6 +164,8 @@ class PetriNetGCNPPOPro(AbstractSearch):
         self.capacity = getattr(petri_net, "capacity", None)
         self.has_capacity = bool(getattr(petri_net, "has_capacity", False)) and self.capacity is not None
         self.transition_flow_allowed = getattr(petri_net, "transition_flow_allowed", [True] * len(pre[0]))
+        self._entry_transitions = self._identify_entry_transitions(pre, end)
+        self._entry_count = 0
         
         self.max_train_steps = max_train_steps
         self.steps_per_epoch = steps_per_epoch
@@ -195,6 +199,8 @@ class PetriNetGCNPPOPro(AbstractSearch):
         self.reward_residence_safe_bonus = reward_residence_safe_bonus
         self.reward_mobility_weight = reward_mobility_weight
         self.reward_qtime_penalty_coeff = reward_qtime_penalty_coeff
+        self.reward_entry_bonus = reward_entry_bonus
+        self.reward_entry_decay = reward_entry_decay
         
         self.beam_width = beam_width
         self.beam_depth = beam_depth
@@ -545,6 +551,8 @@ class PetriNetGCNPPOPro(AbstractSearch):
         self.capacity = getattr(self.petri_net, "capacity", None)
         self.has_capacity = bool(getattr(self.petri_net, "has_capacity", False)) and self.capacity is not None
         self.transition_flow_allowed = getattr(self.petri_net, "transition_flow_allowed", [True] * len(self.pre[0]))
+        self._entry_transitions = self._identify_entry_transitions(self.pre, self.end)
+        self._entry_count = 0
 
         if hasattr(self, "encoder"):
             self.encoder = PetriStateEncoderEnhanced(
@@ -675,6 +683,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
 
     def _set_to_initial(self):
         self.petri_net = self.initial_petri_net.clone()
+        self._entry_count = 0
 
     def _is_goal(self, marking) -> bool:
         p_info = marking.get_p_info()
@@ -726,6 +735,22 @@ class PetriNetGCNPPOPro(AbstractSearch):
             self._mask_cache[cache_key] = mask.clone()
         return mask
 
+    @staticmethod
+    def _identify_entry_transitions(pre, end) -> set:
+        source_places = []
+        for i, e in enumerate(end):
+            if e < 0:
+                source_places.append(i)
+        if not source_places:
+            return set()
+        trans_count = len(pre[0]) if pre and pre[0] else 0
+        entry_trans = set()
+        for p in source_places:
+            for t in range(trans_count):
+                if pre[p][t] > 0:
+                    entry_trans.add(t)
+        return entry_trans
+
     def _compute_residence_reward(self, marking) -> float:
         """
         计算驻留时间奖惩信号。
@@ -738,18 +763,27 @@ class PetriNetGCNPPOPro(AbstractSearch):
 
         不同的网文件拥有不同的 max_residence_time 向量，因此阈值天然适配各环境。
         """
-        if not hasattr(marking, "residence_time_info"):
-            return self.reward_residence_safe_bonus
-
         if bool(getattr(marking, "over_max_residence_time", False)):
             return -self.reward_residence_penalty_max
 
         worst_ratio = 0.0
-        for place_idx, residence_deque in enumerate(marking.residence_time_info):
+        if hasattr(marking, "residence_time_info"):
+            residence_iterables = marking.residence_time_info
+        elif hasattr(marking, "t_info"):
+            residence_iterables = (
+                (getattr(token, "residence_time", None) for token in token_deque)
+                for token_deque in marking.t_info
+            )
+        else:
+            return self.reward_residence_safe_bonus
+
+        for place_idx, residence_iterable in enumerate(residence_iterables):
             limit = self.max_residence_time[place_idx]
             if limit >= 2 ** 31 - 1 or limit <= 0:
                 continue
-            for token_residence in residence_deque:
+            for token_residence in residence_iterable:
+                if token_residence is None:
+                    continue
                 ratio = float(token_residence) / float(limit)
                 worst_ratio = max(worst_ratio, ratio)
 
@@ -766,11 +800,13 @@ class PetriNetGCNPPOPro(AbstractSearch):
         """
         执行环境一步，返回 (下一状态, 奖励, 是否结束, 是否死锁)。
 
-        奖励信号由四个正交分量叠加组成（步骤奖励不参与目标 bonus 的裁剪）：
+        奖励信号由六个正交分量叠加组成（步骤奖励不参与目标 bonus 的裁剪）：
           1. 进度/时间/重复 → step_reward(限幅防梯度爆炸)
           2. 驻留时间奖惩 → residence_reward
           3. 动作空间收缩惩罚 → mobility_penalty(接近死锁的早期警告)
           4. 目标完成奖励 → goal_bonus(独立叠加,不被限幅截断)
+          5. Q时间惩罚 → qtime_penalty(独立叠加)
+          6. 入片激励 → entry_bonus(衰减式,鼓励优先入片)
         """
         if action < 0 or action >= self.petri_net.get_trans_count():
             return curr_marking, -self.reward_deadlock_penalty, True, True
@@ -790,24 +826,26 @@ class PetriNetGCNPPOPro(AbstractSearch):
 
         # ── 1. 基础步骤奖励 ──
         delta_t = float(next_marking.get_prefix() - curr_marking.get_prefix())
-        progress = float(self._goal_distance(curr_marking) - self._goal_distance(next_marking))
-        time_cost = delta_t / self.reward_time_scale
+        progress = float(self._goal_distance(curr_marking) - self._goal_distance(next_marking))  # 鼓励agent缩小与目标的距离
+        time_cost = delta_t / self.reward_time_scale  # 鼓励agent选择耗时短的变迁
 
         visit_count = seen_count.get(self._state_key(next_marking), 0)
-        repeat_penalty = min(visit_count, 10) * self.reward_repeat_penalty
+        repeat_penalty = min(visit_count, 10) * self.reward_repeat_penalty  # 鼓励agent避免重复访问相同状态
 
         step_reward = -time_cost + self.reward_progress_weight * progress - repeat_penalty
 
         if deadlock:
-            step_reward -= self.reward_deadlock_penalty
+            step_reward -= self.reward_deadlock_penalty  # 鼓励agent避免死锁状态
 
         clip_bound = self.reward_deadlock_penalty
-        step_reward = max(-clip_bound, min(clip_bound * 0.5, step_reward))
+        step_reward = max(-clip_bound, min(clip_bound * 0.5, step_reward))  # 限幅防梯度爆炸
 
         # ── 2. 驻留时间奖惩（阈值来自 self.max_residence_time，随网文件变化） ──
         residence_reward = self._compute_residence_reward(next_marking)
 
         # ── 3. 动作空间收缩惩罚（提前感知趋向死锁的状态） ──
+        # 使能变迁数多 → 动作空间大 → 安全
+        # 使能变迁数少 → 动作空间小 → 接近死锁 → 惩罚
         mobility_penalty = 0.0
         if not deadlock and not done:
             next_enabled_count = int(next_mask.sum().item())
@@ -839,6 +877,8 @@ class PetriNetGCNPPOPro(AbstractSearch):
                     penalty_for_worse = degradation_ratio * 80.0
                     goal_bonus = max(self.reward_goal_bonus * 0.1, self.reward_goal_bonus - penalty_for_worse)
 
+        # ── 5. Q时间惩罚（独立叠加，不受 step_reward 限幅影响） ──
+        # Q时间惩罚：奖励agent在Q时间点前完成目标
         qtime_penalty = 0.0
         if bool(getattr(next_marking, "over_max_residence_time", False)):
             petri_net = self.petri_net
@@ -861,6 +901,14 @@ class PetriNetGCNPPOPro(AbstractSearch):
                         qtime_penalty = self.reward_qtime_penalty_coeff * (max_excess / self.reward_time_scale) * self.reward_residence_penalty_max
 
         reward = step_reward + residence_reward - mobility_penalty - qtime_penalty + goal_bonus
+
+        # ── 6. 入片激励（独立叠加，鼓励agent优先选择向系统加入晶圆） ──
+        entry_bonus = 0.0
+        if self._entry_transitions and action in self._entry_transitions:
+            entry_bonus = self.reward_entry_bonus * (self.reward_entry_decay ** self._entry_count)
+            self._entry_count += 1
+
+        reward += entry_bonus
         return next_marking, reward, done, deadlock
 
     def _encode_step_inputs(self, marking):

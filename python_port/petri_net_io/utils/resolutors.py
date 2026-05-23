@@ -83,6 +83,8 @@ class CapicityResolutor(MapResolutor):
     def resolute(self):
         capicity = [2 ** 31 - 1] * self.place_count
         for place_name in self.map:
+            if place_name not in self.p_map:
+                continue
             capicity[self.p_map[place_name]] = int(self.map[place_name])
         self.vectors["capicity"] = capicity
 
@@ -91,8 +93,12 @@ class PlaceToPlacesResolutor(MapResolutor):
     def resolute(self):
         place_from_places = [[] for _ in range(self.place_count)]
         for from_place_name in self.map:
+            if from_place_name not in self.p_map:
+                continue
             from_place_id = self.p_map[from_place_name]
             for to_place_name in self.map[from_place_name].split(" "):
+                if to_place_name not in self.p_map:
+                    continue
                 to_place_id = self.p_map[to_place_name]
                 place_from_places[to_place_id].append(from_place_id)
         self.groups["placeFromPlaces"] = place_from_places
@@ -102,6 +108,8 @@ class PtimeResolutor(MapResolutor):
     def resolute(self):
         min_delay_p = [0] * self.place_count
         for place_name in self.map:
+            if place_name not in self.p_map:
+                continue
             min_delay_p[self.p_map[place_name]] = int(self.map[place_name])
         self.vectors["minDelayP"] = min_delay_p
 
@@ -110,6 +118,8 @@ class QtimePlacesResolutor(SetResolutor):
     def resolute(self):
         qtime_places = [False] * self.place_count
         for place_name in self.set:
+            if place_name not in self.p_map:
+                continue
             qtime_places[self.p_map[place_name]] = True
         self.sets["qtimePlaces"] = qtime_places
 
@@ -123,14 +133,18 @@ class ResidenceTimeResolutor(MapResolutor):
     def resolute(self):
         max_residence_time = [2 ** 31 - 1] * self.place_count
         for place_name in self.map:
+            if place_name not in self.p_map:
+                continue
             max_residence_time[self.p_map[place_name]] = int(self.map[place_name])
         self.vectors["maxResidenceTime"] = max_residence_time
 
 
-class ResourcePlace(SetResolutor):
+class ResourcePlaceResolutor(SetResolutor):
     def resolute(self):
         is_resource = [False] * self.place_count
         for place_name in self.set:
+            if place_name not in self.p_map:
+                continue
             is_resource[self.p_map[place_name]] = True
         self.sets["isResource"] = is_resource
 
@@ -139,5 +153,7 @@ class TtimeResolutor(MapResolutor):
     def resolute(self):
         min_delay_t = [0] * self.tran_count
         for tran_name in self.map:
+            if tran_name not in self.t_map:
+                continue
             min_delay_t[self.t_map[tran_name]] = int(self.map[tran_name])
         self.vectors["minDelayT"] = min_delay_t
