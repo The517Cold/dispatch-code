@@ -45,6 +45,14 @@ def load_petri_net_context(path):
     qtime = matrix_translator.values.get("qtime")
     if qtime is None:
         qtime = 2 ** 31 - 1
+    # movePlaces: 参与 qtime 超时扣除公式的"移动库所"（前置库所子集）
+    move_places = sets.get("movePlaces")
+    if move_places is None:
+        move_places = [False] * len(p_info)
+    # completeTime: 工件完成加工的固定扣除时间常量
+    complete_time = matrix_translator.values.get("completeTime")
+    if complete_time is None:
+        complete_time = 0
     return {
         "petri_net_file": petri_net_file,
         "matrix_translator": matrix_translator,
@@ -64,6 +72,8 @@ def load_petri_net_context(path):
         "place_from_places": place_from_places,
         "qtime_places": qtime_places,
         "qtime": qtime,
+        "move_places": move_places,
+        "complete_time": complete_time,
     }
 
 
@@ -98,4 +108,6 @@ def build_ttpn_by_token_with_res_time(context):
         context["place_from_places"],
         context["qtime_places"],
         context["qtime"],
+        context.get("move_places"),
+        context.get("complete_time", 0),
     )

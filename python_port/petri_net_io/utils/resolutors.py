@@ -157,3 +157,34 @@ class TtimeResolutor(MapResolutor):
                 continue
             min_delay_t[self.t_map[tran_name]] = int(self.map[tran_name])
         self.vectors["minDelayT"] = min_delay_t
+
+
+class MovePlacesResolutor(SetResolutor):
+    """解析 movePlaces 字段，标记参与超时公式中需扣除延迟的"移动库所"。
+
+    movePlaces 中的库所是本次变迁前置库所的子集；在计算 qtime 超时时，
+    这些库所的 ptime 延迟视为合法处理时间，从总耗时中扣除。
+    """
+
+    def resolute(self):
+        move_places = [False] * self.place_count
+        for place_name in self.set:
+            if place_name not in self.p_map:
+                continue
+            move_places[self.p_map[place_name]] = True
+        self.sets["movePlaces"] = move_places
+
+
+class CompleteTimeResolutor(SetResolutor):
+    """解析 completeTime 字段，表示工件完成加工的固定时间常量。
+
+    文件中使用 "completeTime:2" 冒号语法，解析器将其归入 set_info（单元素集合）。
+    本 resolutor 从集合中取出该单一整数值，存入 values["completeTime"]。
+
+    该常量在 qtime 超时判断公式中从总耗时中扣除，以剔除必要的
+    装卸/完工时间对超时判断的影响。
+    """
+
+    def resolute(self):
+        value = int(next(iter(self.set))) if self.set else 0
+        self.values["completeTime"] = value

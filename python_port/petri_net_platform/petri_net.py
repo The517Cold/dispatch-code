@@ -608,7 +608,7 @@ class TTPPNHasResidenceTime(PetriNet):
 
 
 class TTPPNByTokenWithResTime(PetriNet):
-    def __init__(self, p_info, pre, post, min_delay_p, min_delay_t, capacity, residence_time, is_resource, place_from_places, qtime_places, qtime):
+    def __init__(self, p_info, pre, post, min_delay_p, min_delay_t, capacity, residence_time, is_resource, place_from_places, qtime_places, qtime, move_places=None, complete_time=0):
         self.pre = pre
         self.post = post
         self.min_delay_p = min_delay_p
@@ -623,8 +623,13 @@ class TTPPNByTokenWithResTime(PetriNet):
         self.place_from_places = place_from_places
         self.qtime_places = qtime_places
         self.qtime = qtime
+        # movePlaces: 标记参与超时公式扣除的"移动库所"，其 ptime 视为合法处理时间
+        self.move_places = move_places if move_places is not None else [False] * len(pre)
+        # completeTime: 工件完成加工的固定扣除时间常量（来自资源文件 completeTime 字段）
+        self.complete_time = complete_time
         self.is_specific_get = [False] * len(pre)
         self.specific_get = [None] * len(pre)
+        self.qtime_source_places = [False] * len(pre)
         for place in range(len(pre)):
             for tran in range(len(pre[0])):
                 if pre[place][tran] > 0:
@@ -635,11 +640,30 @@ class TTPPNByTokenWithResTime(PetriNet):
                     self.p_list[tran].append(place)
                 if post[place][tran] > 0:
                     self.pa_list[tran].append(place)
-        for from_places in place_from_places:
+        for to_place, from_places in enumerate(place_from_places):
             for place in from_places:
                 self.is_specific_get[place] = True
+                if self.qtime_places[to_place]:
+                    self.qtime_source_places[place] = True
+        # 预计算每个变迁的"移动库所延迟"：前置库所中属于 move_places 的库所 ptime 之和
+        self.move_place_delay_by_tran = self._compute_move_place_delay_by_tran()
         self.curr = TTPPNMarkingByTokenWithResTime(p_info, min_delay_t, min_delay_p)
         self._certify_enable(self.curr)
+
+    def _compute_move_place_delay_by_tran(self):
+        """为每个变迁预计算其前置库所中被 move_places 标记的库所 ptime 之和。
+
+        在 qtime 超时公式中，这些延迟视为合法的运输/处理时间，需从总耗时中扣除。
+        """
+        tran_count = len(self.pre[0])
+        result = [0] * tran_count
+        for tran_idx in range(tran_count):
+            total = 0
+            for place_idx in range(len(self.pre)):
+                if self.pre[place_idx][tran_idx] > 0 and self.move_places[place_idx]:
+                    total += self.min_delay_p[place_idx]
+            result[tran_idx] = total
+        return result
 
     def launch(self, tran):
         self._init()
@@ -653,6 +677,7 @@ class TTPPNByTokenWithResTime(PetriNet):
         self.before_tlaunch_timer = [0] * self.get_trans_count()
         self.get_logic_info = []
         self.get_resource_info = []
+        self.qtime_leave_tokens = []
         self.need_remove = set()
         self.time = 0
 
@@ -666,15 +691,22 @@ class TTPPNByTokenWithResTime(PetriNet):
             if tokens:
                 self.time = max(tokens[-1].timer, self.time)
             for token in tokens:
-                if self.is_resource[place]:
-                    if not self.is_specific_get[place]:
-                        self.get_resource_info.append(token)
-                    else:
-                        if self.specific_get[place] is None:
-                            self.specific_get[place] = []
-                        self.specific_get[place].append(token)
+                if self.qtime_source_places[place]:
+                    self.qtime_leave_tokens.append((token, place))
+                if self.is_specific_get[place]:
+                    if self.specific_get[place] is None:
+                        self.specific_get[place] = []
+                    self.specific_get[place].append(token)
+                elif self.is_resource[place]:
+                    self.get_resource_info.append(token)  # 来源于前置资源库所
                 else:
                     self.get_logic_info.append(token)
+        self._record_qtime_leave_times()
+
+    def _record_qtime_leave_times(self):
+        leave_time = self.curr.prefix + self.time
+        for token, _ in self.qtime_leave_tokens:
+            self.next.qtime_map[token.get_id()] = leave_time
 
     def _tlaunch(self, tran):
         self.time += self.next.curr_delay_t[tran]
@@ -696,6 +728,7 @@ class TTPPNByTokenWithResTime(PetriNet):
                         self.next.over_max_residence_time = True
                     token.timer = 0
         self.next.prefix += self.time
+        curr_tran_delay = self.min_delay_t[tran]
         for place in range(len(self.post)):
             put = self.post[place][tran]
             for from_place in self.place_from_places[place]:
@@ -708,6 +741,11 @@ class TTPPNByTokenWithResTime(PetriNet):
                     for _ in range(put):
                         last = self.specific_get[from_place].pop()
                         token = Token(last.get_id(), self.min_delay_p[place], 0)
+                        # 记录本次变迁延迟与上一变迁延迟，用于 qtime 扩展公式
+                        token.tran_delay = curr_tran_delay
+                        token.last_tran_delay = last.tran_delay
+                        if self._is_over_qtime(token.get_id(), from_place, place, tran, last.tran_delay):
+                            self.next.over_max_residence_time = True
                     if token is not None:
                         self.next.t_info[place].append(token)
                     put = 0
@@ -717,26 +755,35 @@ class TTPPNByTokenWithResTime(PetriNet):
                     for _ in range(size):
                         last = self.specific_get[from_place].pop()
                         token = Token(last.get_id(), self.min_delay_p[place], 0)
+                        # 记录本次变迁延迟与上一变迁延迟，用于 qtime 扩展公式
+                        token.tran_delay = curr_tran_delay
+                        token.last_tran_delay = last.tran_delay
+                        if self._is_over_qtime(token.get_id(), from_place, place, tran, last.tran_delay):
+                            self.next.over_max_residence_time = True
                     if token is not None:
                         self.next.t_info[place].append(token)
                     put -= size
             for _ in range(put):
                 token = None
-                if self.is_resource[place]:
-                    if self.get_resource_info:
+                if self.is_resource[place]:  # 后置库所是否是资源库所
+                    if self.get_resource_info:  # 有资源token可以复用
                         last = self.get_resource_info.pop()
                         token = Token(last.get_id(), self.min_delay_p[place], 0)
-                        self.next.over_max_residence_time = self.qtime_places[place] and self._is_over_qtime(token.get_id())
-                    else:
+                        token.tran_delay = curr_tran_delay
+                        token.last_tran_delay = last.tran_delay
+                    else:  # 没有资源token可以复用
                         token = Token(self.next.max_id, self.min_delay_p[place], 0)
+                        token.tran_delay = curr_tran_delay
                         self.next.max_id += 1
-                        self.next.over_max_residence_time = self.qtime_places[place] and self._is_over_qtime(token.get_id())
                 else:
                     if self.get_logic_info:
                         last = self.get_logic_info.pop()
                         token = Token(last.get_id(), self.min_delay_p[place], 0)
+                        token.tran_delay = curr_tran_delay
+                        token.last_tran_delay = last.tran_delay
                     else:
                         token = Token(self.next.max_id, self.min_delay_p[place], 0)
+                        token.tran_delay = curr_tran_delay
                         self.next.max_id += 1
                 self.next.t_info[place].append(token)
         for place in self.p_list[tran]:
@@ -745,13 +792,43 @@ class TTPPNByTokenWithResTime(PetriNet):
         self.next.curr_delay_t[tran] = self.min_delay_t[tran]
         self._certify_enable(self.next)
 
-    def _is_over_qtime(self, token_id):
-        if token_id not in self.next.qtime_map:
-            self.next.qtime_map[token_id] = self.next.prefix
+    def _is_over_qtime(self, token_id, from_place, to_place, tran=None, last_tran_delay=0):
+        """判断 token 进入 qtime 标记库所时是否超出 qtime 约束。
+
+        扩展超时公式（相比仅比较绝对时间差的旧逻辑）：
+
+          net_wait = 当前时间节点
+                     - token 上次变迁发射的延迟（last_tran_delay）
+                     - 本次变迁的延迟（min_delay_t[tran]）
+                     - 本次变迁前置库所中 movePlaces 标记库所的 ptime 之和
+                     - completeTime 常量
+                     - token 上次在 qtime 源库所离开时的时间节点（qtime_map[token_id]）
+
+          若 net_wait > qtime 则判定超时。
+
+        以上各项扣除量均视为合法处理时间，net_wait 代表扣除合法处理后的
+        纯等待时间。当 move_places 全为 False 且 complete_time=0 时，
+        公式仍能正确反映多步流程中的等待时间。
+        """
+        if not self.qtime_places[to_place] or from_place not in self.place_from_places[to_place]:
             return False
-        time = self.next.prefix - self.next.qtime_map[token_id]
-        self.next.qtime_map[token_id] = self.next.get_prefix()
-        return time > self.qtime
+        if token_id not in self.next.qtime_map:  # 还没有从约束源库所离开
+            return False
+        curr_time_node = self.next.prefix
+        # 当前变迁延迟
+        curr_tran_delay = self.min_delay_t[tran] if tran is not None else 0
+        # 本次变迁前置库所中 movePlaces 标记库所的 ptime 之和
+        move_delay = self.move_place_delay_by_tran[tran] if tran is not None else 0
+        # 扣除合法处理时间后的纯等待时间
+        net_wait = (
+            curr_time_node
+            - last_tran_delay
+            - curr_tran_delay
+            - move_delay
+            - self.complete_time
+            - self.next.qtime_map[token_id]
+        )
+        return net_wait > self.qtime
 
     def _check_is_enable(self, tran):
         s_p_list = self.p_list[tran]
@@ -802,7 +879,7 @@ class TTPPNByTokenWithResTime(PetriNet):
         return len(self.pre[0])
 
     def clone(self):
-        return TTPPNByTokenWithResTime(self.curr.get_p_info(), self.pre, self.post, self.min_delay_p, self.min_delay_t, self.capacity, self.residence_time, self.is_resource, self.place_from_places, self.qtime_places, self.qtime)
+        return TTPPNByTokenWithResTime(self.curr.get_p_info(), self.pre, self.post, self.min_delay_p, self.min_delay_t, self.capacity, self.residence_time, self.is_resource, self.place_from_places, self.qtime_places, self.qtime, self.move_places, self.complete_time)
 
 
 class TTimePetriNet(PetriNet):
