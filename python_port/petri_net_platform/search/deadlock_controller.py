@@ -13,31 +13,20 @@ from .rl_env_semantics import (
 
 @dataclass
 class DeadlockAnalysis:
-    # 当前 marking 下，真实环境语义判定为可执行的动作集合。
     enabled_actions: List[int]
-    # 第一层硬过滤后保留下来的动作集合。
     safe_actions: List[int]
-    # 控制器最终返回给 RL 的动作集合。
-    # 注意：当 safe_actions 为空时，第一版会回退到 enabled_actions，避免过度误杀。
     controller_actions: List[int]
-    # 被第一层硬过滤挡掉的动作。
     hard_blocked_actions: List[int]
-    # 被第二层 lookahead 判成局部高风险的动作。
     soft_risk_actions: List[int]
-    # 动作 -> 主原因，仅记录一个主原因，便于日志分析。
     reason_by_action: Dict[int, str]
-    # 是否可视为 FBM 候选边界态。
     fbm_candidate: bool
-    # 当前状态本身是否已经是真死锁。
     state_deadlock: bool
-    # 当前状态死锁原因，例如 no_enabled_transitions / over_residence_time。
     state_deadlock_reason: str
-    # 当 safe_actions 被全部筛空时，是否发生了 enabled 回退。
     controller_empty_fallback: bool
-    # 当前 controller_actions 的来源，用于区分 rule_safe / lookahead_safe / fallback。
     controller_source: str
-    # 当前分析是否实际执行了第二层 lookahead。
     lookahead_ran: bool
+    qtime_warning: bool = False
+    qtime_min_margin: float = float("inf")
 
     def enabled_count(self) -> int:
         return len(self.enabled_actions)
@@ -73,10 +62,14 @@ class DeadlockController:
         log_path: Optional[str] = None,
         controller_name: str = "deadlock_controller",
         enable_lookahead: bool = True,
-        lookahead_depth: int = 2,
+        lookahead_depth: int = 4,
         lookahead_width: int = 4,
         lookahead_trigger_safe_limit: int = 4,
         lookahead_trigger_on_fbm: bool = True,
+        enable_qtime_warning: bool = True,
+        qtime_warning_ratio: float = 0.8,
+        qtime_places: Optional[Sequence[bool]] = None,
+        qtime: Optional[float] = None,
     ):
         # 下面这组参数是测试 deadlock controller 时最常调的参数：
         #
@@ -115,6 +108,10 @@ class DeadlockController:
         self.lookahead_width = max(1, int(lookahead_width))
         self.lookahead_trigger_safe_limit = max(1, int(lookahead_trigger_safe_limit))
         self.lookahead_trigger_on_fbm = bool(lookahead_trigger_on_fbm)
+        self.enable_qtime_warning = bool(enable_qtime_warning)
+        self.qtime_warning_ratio = max(0.0, min(1.0, float(qtime_warning_ratio)))
+        self.qtime_places = list(qtime_places) if qtime_places is not None else None
+        self.qtime = float(qtime) if qtime is not None else None
         if log_path is None:
             log_path = os.path.abspath(
                 os.path.join(os.path.dirname(__file__), "..", "..", "results", "deadlock_controller.log")
@@ -157,6 +154,8 @@ class DeadlockController:
                 controller_empty_fallback=False,
                 controller_source="state_deadlock",
                 lookahead_ran=False,
+                qtime_warning=False,
+                qtime_min_margin=0.0,
             )
             self._cache_analysis(marking, analysis)
             return analysis
@@ -164,8 +163,8 @@ class DeadlockController:
         safe_actions: List[int] = []
         hard_blocked_actions: List[int] = []
         reason_by_action: Dict[int, str] = {}
-        # 第一层：对每个 enabled 动作做一步模拟。
-        # 若一步后立即驻留超时，或一步后立即无路可走，则做硬过滤。
+        qtime_warning = False
+        qtime_min_margin = float("inf")
         for action in enabled_actions:
             next_marking = self._simulate_action(petri_net, marking, action)
             reason = self._hard_block_reason(petri_net, next_marking)
@@ -174,6 +173,10 @@ class DeadlockController:
             else:
                 hard_blocked_actions.append(action)
                 reason_by_action[action] = reason
+            if self.enable_qtime_warning:
+                margin = self._compute_qtime_margin(next_marking)
+                if margin < qtime_min_margin:
+                    qtime_min_margin = margin
         controller_empty_fallback = len(safe_actions) == 0
         # 第一版采取保守 fallback：
         # 即使第一层把 safe_actions 全部筛空，也先退回 enabled_actions，而不是直接阻断。
@@ -181,7 +184,6 @@ class DeadlockController:
         soft_risk_actions: List[int] = []
         controller_source = "enabled_fallback" if controller_empty_fallback else "rule_safe"
         lookahead_ran = False
-        # 第二层：只在满足触发条件时运行小深度活性检查。
         if (not controller_empty_fallback) and self._should_run_lookahead(safe_actions, hard_blocked_actions):
             lookahead_ran = True
             controller_actions, soft_risk_actions = self._apply_lookahead(petri_net, marking, safe_actions, reason_by_action)
@@ -190,6 +192,8 @@ class DeadlockController:
                     controller_source = "lookahead_fallback"
                 else:
                     controller_source = "lookahead_safe"
+        if self.enable_qtime_warning and qtime_min_margin != float("inf"):
+            qtime_warning = qtime_min_margin < 0
         analysis = DeadlockAnalysis(
             enabled_actions=enabled_actions.copy(),
             safe_actions=safe_actions,
@@ -203,6 +207,8 @@ class DeadlockController:
             controller_empty_fallback=controller_empty_fallback,
             controller_source=controller_source,
             lookahead_ran=lookahead_ran,
+            qtime_warning=qtime_warning,
+            qtime_min_margin=qtime_min_margin if qtime_min_margin != float("inf") else 0.0,
         )
         self._cache_analysis(marking, analysis)
         return analysis
@@ -257,13 +263,12 @@ class DeadlockController:
         return True
 
     def _hard_block_reason(self, petri_net, next_marking) -> Optional[str]:
-        # 第一层目前只做两类“证据很强”的硬过滤：
-        # 1. 一步后驻留时间超限
-        # 2. 一步后立即死锁
         if has_over_residence_time(next_marking):
             return "over_residence_time"
         if self._is_goal_marking(next_marking):
             return None
+        if self.enable_qtime_warning and self._check_qtime_risk(next_marking):
+            return "qtime_risk"
         next_enabled = enabled_transitions_for_marking(petri_net, next_marking)
         if not next_enabled:
             return "immediate_deadlock"
@@ -359,6 +364,9 @@ class DeadlockController:
             key.append(self._serialize_nested(getattr(marking, "residence_time_info", [])))
         over = bool(getattr(marking, "over_max_residence_time", False))
         key.append(over)
+        if hasattr(marking, "qtime_map"):
+            qtime_map = getattr(marking, "qtime_map", {})
+            key.append(tuple(sorted((k, round(v, 4)) for k, v in qtime_map.items())))
         return tuple(key)
 
     def _serialize_nested(self, groups):
@@ -371,3 +379,28 @@ class DeadlockController:
         if hasattr(item, "get_id") and hasattr(item, "timer") and hasattr(item, "residence_time"):
             return (item.get_id(), item.timer, item.residence_time)
         return item
+
+    def _check_qtime_risk(self, marking) -> bool:
+        if not self.enable_qtime_warning:
+            return False
+        if self.qtime is None or self.qtime <= 0:
+            return False
+        margin = self._compute_qtime_margin(marking)
+        if margin == float("inf"):
+            return False
+        return margin < self.qtime * (1.0 - self.qtime_warning_ratio)
+
+    def _compute_qtime_margin(self, marking) -> float:
+        if self.qtime is None or self.qtime <= 0:
+            return float("inf")
+        qtime_map = getattr(marking, "qtime_map", None)
+        if not qtime_map:
+            return float("inf")
+        prefix = getattr(marking, "prefix", 0)
+        min_margin = float("inf")
+        for token_id, finish_time in qtime_map.items():
+            net_wait = prefix - finish_time
+            margin = self.qtime - net_wait
+            if margin < min_margin:
+                min_margin = margin
+        return min_margin
