@@ -3,11 +3,11 @@
 try:
     from .file_to_object import PntTranslator
     from .object_to_petri_net_info import CustomMatrixTranslator
-    from petri_net_platform.petri_net import TTPPNHasResidenceTime
+    from petri_net_platform.petri_net import TTPPNHasResidenceTime, TTPPNByTokenWithResTime
 except ImportError:
     from python_port.petri_net_io.utils.file_to_object import PntTranslator
     from python_port.petri_net_io.utils.object_to_petri_net_info import CustomMatrixTranslator
-    from python_port.petri_net_platform.petri_net import TTPPNHasResidenceTime
+    from python_port.petri_net_platform.petri_net import TTPPNHasResidenceTime, TTPPNByTokenWithResTime
 
 
 def load_petri_net_context(path):
@@ -39,6 +39,20 @@ def load_petri_net_context(path):
     place_from_places = groups.get("placeFromPlaces")
     if place_from_places is None:
         place_from_places = [[] for _ in range(len(p_info))]
+    qtime_places = sets.get("qtimePlaces")
+    if qtime_places is None:
+        qtime_places = [False] * len(p_info)
+    qtime = matrix_translator.values.get("qtime")
+    if qtime is None:
+        qtime = 2 ** 31 - 1
+    # movePlaces: 参与 qtime 超时扣除公式的"移动库所"（前置库所子集）
+    move_places = sets.get("movePlaces")
+    if move_places is None:
+        move_places = [False] * len(p_info)
+    # completeTime: 工件完成加工的固定扣除时间常量
+    complete_time = matrix_translator.values.get("completeTime")
+    if complete_time is None:
+        complete_time = 0
     return {
         "petri_net_file": petri_net_file,
         "matrix_translator": matrix_translator,
@@ -56,6 +70,10 @@ def load_petri_net_context(path):
         "a_matrix": a_matrix,
         "is_resource": is_resource,
         "place_from_places": place_from_places,
+        "qtime_places": qtime_places,
+        "qtime": qtime,
+        "move_places": move_places,
+        "complete_time": complete_time,
     }
 
 
@@ -71,4 +89,25 @@ def build_ttpn_with_residence(context):
         context["capacity"],
         context["place_from_places"],
         context["is_resource"],
+    )
+
+
+def build_ttpn_by_token_with_res_time(context):
+    capacity = context["capacity"]
+    if capacity is None:
+        capacity = [2 ** 31 - 1] * len(context["p_info"])
+    return TTPPNByTokenWithResTime(
+        context["p_info"],
+        context["pre"],
+        context["post"],
+        context["min_delay_p"],
+        context["min_delay_t"],
+        capacity,
+        context["max_residence_time"],
+        context["is_resource"],
+        context["place_from_places"],
+        context["qtime_places"],
+        context["qtime"],
+        context.get("move_places"),
+        context.get("complete_time", 0),
     )

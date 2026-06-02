@@ -162,16 +162,21 @@ class TTPPNMarkingHasResidenceTime(TTPPNMarking, HasResideceTime):
 
 
 class Token:
-    def __init__(self, token_id, timer, residence_time):
+    def __init__(self, token_id, timer, residence_time, tran_delay=0, last_tran_delay=0):
         self.id = token_id
         self.timer = timer
         self.residence_time = residence_time
+        # 产生本 token 的变迁（将 token 放入当前库所的变迁）的延迟
+        self.tran_delay = tran_delay
+        # 产生 token 的上一次变迁（将 token 放入其来源库所的变迁）的延迟，
+        # 用于 qtime 超时公式中扣除上一步合法处理时间
+        self.last_tran_delay = last_tran_delay
 
     def get_id(self):
         return self.id
 
     def clone(self):
-        return Token(self.id, self.timer, self.residence_time)
+        return Token(self.id, self.timer, self.residence_time, self.tran_delay, self.last_tran_delay)
 
 
 class TTPPNMarkingByTokenWithResTime(HasResideceTime):
@@ -215,7 +220,7 @@ class TTPPNMarkingByTokenWithResTime(HasResideceTime):
 
     def clone(self):
         clone = TTPPNMarkingByTokenWithResTime.__new__(TTPPNMarkingByTokenWithResTime)
-        clone.t_info = [deque(Token(t.get_id(), t.timer, t.residence_time) for t in dq) for dq in self.t_info]
+        clone.t_info = [deque(Token(t.get_id(), t.timer, t.residence_time, t.tran_delay, t.last_tran_delay) for t in dq) for dq in self.t_info]
         clone.max_id = self.max_id
         clone.prefix = self.prefix
         clone.curr_delay_t = self.curr_delay_t.copy()

@@ -83,6 +83,8 @@ class CapicityResolutor(MapResolutor):
     def resolute(self):
         capicity = [2 ** 31 - 1] * self.place_count
         for place_name in self.map:
+            if place_name not in self.p_map:
+                continue
             capicity[self.p_map[place_name]] = int(self.map[place_name])
         self.vectors["capicity"] = capicity
 
@@ -91,8 +93,12 @@ class PlaceToPlacesResolutor(MapResolutor):
     def resolute(self):
         place_from_places = [[] for _ in range(self.place_count)]
         for from_place_name in self.map:
+            if from_place_name not in self.p_map:
+                continue
             from_place_id = self.p_map[from_place_name]
             for to_place_name in self.map[from_place_name].split(" "):
+                if to_place_name not in self.p_map:
+                    continue
                 to_place_id = self.p_map[to_place_name]
                 place_from_places[to_place_id].append(from_place_id)
         self.groups["placeFromPlaces"] = place_from_places
@@ -102,6 +108,8 @@ class PtimeResolutor(MapResolutor):
     def resolute(self):
         min_delay_p = [0] * self.place_count
         for place_name in self.map:
+            if place_name not in self.p_map:
+                continue
             min_delay_p[self.p_map[place_name]] = int(self.map[place_name])
         self.vectors["minDelayP"] = min_delay_p
 
@@ -110,6 +118,8 @@ class QtimePlacesResolutor(SetResolutor):
     def resolute(self):
         qtime_places = [False] * self.place_count
         for place_name in self.set:
+            if place_name not in self.p_map:
+                continue
             qtime_places[self.p_map[place_name]] = True
         self.sets["qtimePlaces"] = qtime_places
 
@@ -123,14 +133,18 @@ class ResidenceTimeResolutor(MapResolutor):
     def resolute(self):
         max_residence_time = [2 ** 31 - 1] * self.place_count
         for place_name in self.map:
+            if place_name not in self.p_map:
+                continue
             max_residence_time[self.p_map[place_name]] = int(self.map[place_name])
         self.vectors["maxResidenceTime"] = max_residence_time
 
 
-class ResourcePlace(SetResolutor):
+class ResourcePlaceResolutor(SetResolutor):
     def resolute(self):
         is_resource = [False] * self.place_count
         for place_name in self.set:
+            if place_name not in self.p_map:
+                continue
             is_resource[self.p_map[place_name]] = True
         self.sets["isResource"] = is_resource
 
@@ -139,5 +153,38 @@ class TtimeResolutor(MapResolutor):
     def resolute(self):
         min_delay_t = [0] * self.tran_count
         for tran_name in self.map:
+            if tran_name not in self.t_map:
+                continue
             min_delay_t[self.t_map[tran_name]] = int(self.map[tran_name])
         self.vectors["minDelayT"] = min_delay_t
+
+
+class MovePlacesResolutor(SetResolutor):
+    """解析 movePlaces 字段，标记参与超时公式中需扣除延迟的"移动库所"。
+
+    movePlaces 中的库所是本次变迁前置库所的子集；在计算 qtime 超时时，
+    这些库所的 ptime 延迟视为合法处理时间，从总耗时中扣除。
+    """
+
+    def resolute(self):
+        move_places = [False] * self.place_count
+        for place_name in self.set:
+            if place_name not in self.p_map:
+                continue
+            move_places[self.p_map[place_name]] = True
+        self.sets["movePlaces"] = move_places
+
+
+class CompleteTimeResolutor(SetResolutor):
+    """解析 completeTime 字段，表示工件完成加工的固定时间常量。
+
+    文件中使用 "completeTime:2" 冒号语法，解析器将其归入 set_info（单元素集合）。
+    本 resolutor 从集合中取出该单一整数值，存入 values["completeTime"]。
+
+    该常量在 qtime 超时判断公式中从总耗时中扣除，以剔除必要的
+    装卸/完工时间对超时判断的影响。
+    """
+
+    def resolute(self):
+        value = int(next(iter(self.set))) if self.set else 0
+        self.values["completeTime"] = value

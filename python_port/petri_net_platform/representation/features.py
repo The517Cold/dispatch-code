@@ -49,19 +49,16 @@ class PetriRepresentationInput:
 
 class PetriStateFeatureEncoder:
     def __init__(self, graph: PetriNetGraph, device: Optional[torch.device] = None):
-        # 设置图和设备
         self.graph = graph.to(_as_device(device, graph.device))
         self.device = self.graph.device
-        # 预计算度特征(避免重复计算)
         self._place_degree = self.graph.place_degree_features().to(self.device)
         self._transition_degree = self.graph.transition_degree_features().to(self.device)
-        # 检查是否有容量约束
         self._include_capacity_feature = self._has_finite_constraint(self.graph.capacity)
-        # 死锁控制器相关
         self._controller_petri_net = None
         self._deadlock_controller = None
         self._controller_representation_enabled = True
-        # 构建特征名称和维度
+        self._qtime_places = None
+        self._qtime = None
         self.place_feature_names = self._build_place_feature_names()
         self.transition_feature_names = self._build_transition_feature_names()
         self.place_feature_dim = len(self.place_feature_names)
@@ -71,6 +68,14 @@ class PetriStateFeatureEncoder:
         self._controller_petri_net = petri_net_or_getter
         self._deadlock_controller = deadlock_controller
         self._controller_representation_enabled = bool(enabled)
+
+    def bind_qtime(self, qtime_places, qtime):
+        self._qtime_places = qtime_places
+        self._qtime = qtime
+        self.place_feature_names = self._build_place_feature_names()
+        self.transition_feature_names = self._build_transition_feature_names()
+        self.place_feature_dim = len(self.place_feature_names)
+        self.transition_feature_dim = len(self.transition_feature_names)
 
     def set_controller_representation_enabled(self, enabled: bool):
         self._controller_representation_enabled = bool(enabled)
@@ -95,6 +100,8 @@ class PetriStateFeatureEncoder:
 
     def encode_places(self, marking) -> torch.Tensor:
         p_info = list(marking.get_p_info())
+        qtime_map = getattr(marking, "qtime_map", None)
+        prefix = getattr(marking, "prefix", 0)
         rows = []
         for index, token in enumerate(p_info):
             oldest_residence = self._get_oldest_token_residence_time(marking, index)
@@ -108,7 +115,7 @@ class PetriStateFeatureEncoder:
             row = [
                 _safe_log1p(float(token)),
                 has_goal_constraint,
-                _safe_log1p(oldest_residence),  # 驻留时间最长的token的驻留时间
+                _safe_log1p(oldest_residence),
                 _safe_log1p(self.graph.min_delay_p[index].item()),
                 _safe_log1p(max_residence),
                 _safe_log1p(degree_in),
@@ -116,6 +123,11 @@ class PetriStateFeatureEncoder:
             ]
             if self._include_capacity_feature:
                 row.append(_safe_log1p(capacity))
+            if self._qtime_places is not None and self._qtime is not None and self._qtime > 0:
+                is_qtime_place = 1.0 if index < len(self._qtime_places) and self._qtime_places[index] else 0.0
+                qtime_margin = self._compute_place_qtime_margin(marking, index, qtime_map, prefix)
+                row.append(is_qtime_place)
+                row.append(_safe_log1p(qtime_margin))
             rows.append(row)
         return torch.tensor(rows, dtype=torch.float32, device=self.device)
 
@@ -123,27 +135,30 @@ class PetriStateFeatureEncoder:
         enabled = self._get_enabled_transitions(marking)
         current_delay = self._get_current_transition_delay(marking)
         controller_features = self._get_controller_transition_features(marking)
+        qtime_margin = self._compute_global_qtime_margin(marking)
         rows = []
         for index in range(self.graph.transition_count):
             degree = self._transition_degree[index]
             total_pre = degree[2].item()
             total_post = degree[3].item()
-            rows.append(
-                [
-                    enabled[index],
-                    _safe_log1p(current_delay[index]),
-                    _safe_log1p(self.graph.min_delay_t[index].item()),
-                    _safe_log1p(degree[0].item()),
-                    _safe_log1p(degree[1].item()),
-                    _safe_log1p(total_pre),
-                    _safe_log1p(total_post),
-                    controller_features["controller_allowed"][index],
-                    controller_features["hard_blocked"][index],
-                    controller_features["soft_risk"][index],
-                    controller_features["safe_ratio"],
-                    controller_features["fbm_candidate"],
-                ]
-            )
+            row = [
+                enabled[index],
+                _safe_log1p(current_delay[index]),
+                _safe_log1p(self.graph.min_delay_t[index].item()),
+                _safe_log1p(degree[0].item()),
+                _safe_log1p(degree[1].item()),
+                _safe_log1p(total_pre),
+                _safe_log1p(total_post),
+                controller_features["controller_allowed"][index],
+                controller_features["hard_blocked"][index],
+                controller_features["soft_risk"][index],
+                controller_features["safe_ratio"],
+                controller_features["fbm_candidate"],
+            ]
+            if self._qtime is not None and self._qtime > 0:
+                row.append(controller_features["qtime_warning"])
+                row.append(_safe_log1p(qtime_margin))
+            rows.append(row)
         return torch.tensor(rows, dtype=torch.float32, device=self.device)
 
     def _build_place_feature_names(self):
@@ -158,11 +173,13 @@ class PetriStateFeatureEncoder:
         ]
         if self._include_capacity_feature:
             names.append("capacity")
+        if self._qtime_places is not None and self._qtime is not None and self._qtime > 0:
+            names.append("is_qtime_place")
+            names.append("qtime_margin")
         return tuple(names)
 
-    @staticmethod
-    def _build_transition_feature_names():
-        return (
+    def _build_transition_feature_names(self):
+        names = [
             "enabled",
             "current_delay",
             "min_delay_t",
@@ -175,7 +192,11 @@ class PetriStateFeatureEncoder:
             "soft_risk",
             "safe_ratio",
             "fbm_candidate",
-        )
+        ]
+        if self._qtime is not None and self._qtime > 0:
+            names.append("qtime_warning")
+            names.append("qtime_margin")
+        return tuple(names)
 
     @staticmethod
     def _has_finite_constraint(values: torch.Tensor) -> bool:
@@ -230,6 +251,7 @@ class PetriStateFeatureEncoder:
             "soft_risk": zero_actions.copy(),
             "safe_ratio": 0.0,
             "fbm_candidate": 0.0,
+            "qtime_warning": 0.0,
         }
         if not self._controller_representation_enabled:
             return default
@@ -238,12 +260,10 @@ class PetriStateFeatureEncoder:
         petri_net = self._controller_petri_net() if callable(self._controller_petri_net) else self._controller_petri_net
         if petri_net is None:
             return default
-        # 调用死锁控制器分析状态
         try:
             analysis = self._deadlock_controller.analyze_state(petri_net, marking)
         except BaseException:
             return default
-        # 提取控制器判断结果
         controller_allowed = zero_actions.copy()
         hard_blocked = zero_actions.copy()
         soft_risk = zero_actions.copy()
@@ -264,12 +284,52 @@ class PetriStateFeatureEncoder:
             "soft_risk": soft_risk,
             "safe_ratio": safe_ratio,
             "fbm_candidate": 1.0 if analysis.fbm_candidate else 0.0,
+            "qtime_warning": 1.0 if analysis.qtime_warning else 0.0,
         }
-        # - controller_allowed ：控制器认为安全的动作(one-hot向量)
-        # - hard_blocked ：被硬过滤规则阻塞的动作(one-hot向量)
-        # - soft_risk ：被lookahead判定为高风险的动作(one-hot向量)
-        # - safe_ratio ：安全动作占使能动作的比例(标量)
-        # - fbm_candidate ：当前状态是否为FBM边界态(标量)
+
+    def _compute_place_qtime_margin(self, marking, place, qtime_map, prefix):
+        if self._qtime is None or self._qtime <= 0:
+            return 0.0
+        if not self._qtime_places or place >= len(self._qtime_places) or not self._qtime_places[place]:
+            return 0.0
+        if not qtime_map:
+            return 0.0
+        t_info = getattr(marking, "t_info", None)
+        if t_info is None or place >= len(t_info):
+            return 0.0
+        tokens = t_info[place]
+        if not tokens:
+            return 0.0
+        min_margin = float("inf")
+        for token in tokens:
+            token_id = token.get_id() if hasattr(token, "get_id") else None
+            if token_id is None or token_id not in qtime_map:
+                continue
+            finish_time = qtime_map[token_id]
+            net_wait = prefix - finish_time
+            margin = self._qtime - net_wait
+            if margin < min_margin:
+                min_margin = margin
+        if min_margin == float("inf"):
+            return 0.0
+        return max(0.0, min_margin)
+
+    def _compute_global_qtime_margin(self, marking):
+        if self._qtime is None or self._qtime <= 0:
+            return 0.0
+        qtime_map = getattr(marking, "qtime_map", None)
+        if not qtime_map:
+            return 0.0
+        prefix = getattr(marking, "prefix", 0)
+        min_margin = float("inf")
+        for token_id, finish_time in qtime_map.items():
+            net_wait = prefix - finish_time
+            margin = self._qtime - net_wait
+            if margin < min_margin:
+                min_margin = margin
+        if min_margin == float("inf"):
+            return 0.0
+        return max(0.0, min_margin)
 
 # 底下这两个是上一版本的代码
 class PetriStateEncoder:
@@ -358,6 +418,10 @@ class PetriStateEncoderEnhanced(PetriStateEncoder):
     def bind_deadlock_controller(self, petri_net, deadlock_controller, enabled: bool = True):
         if self.feature_encoder is not None:
             self.feature_encoder.bind_deadlock_controller(petri_net, deadlock_controller, enabled=enabled)
+
+    def bind_qtime(self, qtime_places, qtime):
+        if self.feature_encoder is not None:
+            self.feature_encoder.bind_qtime(qtime_places, qtime)
 
     def set_controller_representation_enabled(self, enabled: bool):
         if self.feature_encoder is not None:

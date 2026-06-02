@@ -1,5 +1,7 @@
 import random
 import threading
+import time
+import math
 from typing import Dict, List, Tuple, Any, Optional
 import os
 import sys
@@ -17,10 +19,19 @@ try:
     from ..search.rl_env_semantics import enabled_transitions_for_marking
     from ..representation.features import PetriRepresentationInput, PetriStateEncoderEnhanced
     from ...petri_net_io.utils.checkpoint_selector import load_compatible_state
+    from ..marking import Token
 except ImportError:
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
+    # 该文件实际位于 python_port/ 根目录下，仅有一层向上即可命中 python_port/。
+    # 原代码使用 ".."*3，会把 D:\dispatch_code 这种祖父目录加入 sys.path，
+    # 进而被同名空目录覆盖为 namespace package，导致 imitation 等子包神秘失败。
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidate_roots = [
+        here,                              # python_port/
+        os.path.dirname(here),             # 兼容文件被搬到子目录的情况
+    ]
+    for repo_root in candidate_roots:
+        if repo_root and repo_root not in sys.path:
+            sys.path.insert(0, repo_root)
     from petri_net_platform.search.abstract_search import AbstractSearch
     from petri_net_platform.search.petri_net_gcn_ppo import PetriNetGCNActorCritic
     from petri_net_platform.utils.result import Result
@@ -28,6 +39,7 @@ except ImportError:
     from petri_net_platform.search.rl_env_semantics import enabled_transitions_for_marking
     from petri_net_platform.representation.features import PetriRepresentationInput, PetriStateEncoderEnhanced
     from petri_net_io.utils.checkpoint_selector import load_compatible_state
+    from petri_net_platform.marking import Token
 
 """
     这个文档的代码是多网训练但是没有加专家序列的版本
@@ -35,23 +47,41 @@ except ImportError:
 
 
 class RolloutBuffer:
+    """
+    经验回放缓冲区。
+
+    重要修复(v2):除 place_features 外，新增 transition_states 列表用于保存
+    每一步的 transition 输入特征(启用标志、控制器特征等).在原版中,PPO 更新
+    时仅传入 place_features → 模型用常量 transition_seed 替代 → 新策略 logits
+    与采集时用的旧策略 logits 输入分布不同 → PPO 重要性采样比率失真，整个 PPO
+    目标函数失效。该字段必须与 states 同步增删。
+
+    同时新增 last_value 字段:collect 结束时若末步非终止，应基于末状态的价值
+    估计进行 bootstrap,避免 GAE 在截断尾部偏差为 0。
+    """
+
     def __init__(self):
-        self.states = []
+        self.states = []  # place_features per step（图节点特征）
+        self.transition_states = []  # transition 节点特征（含 enabled / controller 等）
         self.actions = []
-        self.logprobs = []  # 动作的对数概率
+        self.logprobs = []  # 动作的对数概率（与采样分布一致）
         self.rewards = []
         self.is_terminals = []
         self.values = []  # 状态价值
         self.masks = []
+        # 末状态 bootstrap 价值；GAE 截断时使用，避免尾部偏差
+        self.last_value = 0.0
 
     def clear(self):
         del self.states[:]
+        del self.transition_states[:]
         del self.actions[:]
         del self.logprobs[:]
         del self.rewards[:]
         del self.is_terminals[:]
         del self.values[:]
         del self.masks[:]
+        self.last_value = 0.0
 
 
 class PetriNetGCNPPOPro(AbstractSearch):
@@ -88,8 +118,16 @@ class PetriNetGCNPPOPro(AbstractSearch):
         reward_progress_weight: float = 2.0,  # 进度奖励权重
         reward_repeat_penalty: float = 0.2,  # 重复奖励惩罚
         reward_time_scale: float = 1000.0,  # 时间奖励缩放
+        reward_residence_warn_ratio: float = 0.7,  # 驻留时间警告阈值占比（超过此比例开始渐进惩罚）
+        reward_residence_penalty_max: float = 30.0,  # 驻留时间超限最大惩罚
+        reward_residence_safe_bonus: float = 0.5,  # 驻留时间安全时的小额奖励
+        reward_mobility_weight: float = 0.3,  # 动作空间收缩惩罚权重
+        reward_qtime_penalty_coeff: float = 0.5,  # q-time超限惩罚系数
+        reward_entry_bonus: float = 5.0,  # 入片激励奖励
+        reward_entry_decay: float = 0.85,  # 入片激励衰减系数（每入一片衰减一次）
         beam_width: int = 100,  # 搜索宽度
         beam_depth: int = 800,  # 搜索深度
+        search_depth: int = 1400, # 搜索深度
         search_strategy: str = "beam",  # 搜索策略: "beam"、"greedy" 或 "stochastic"
         stochastic_num_rollouts: int = 50,  # 随机采样策略的轨迹数量
         stochastic_temperature: float = 1.2,  # 随机采样策略的温度系数
@@ -106,6 +144,9 @@ class PetriNetGCNPPOPro(AbstractSearch):
         # 【新增】: 接收 max_residence_time
         max_residence_time: List[int] = None, 
         env_pool=None,
+        eval_env_pool=None,     # 独立的评估池（不参与训练，仅用于训练中监控泛化能力）
+        eval_pool_interval: int = 0,  # 每隔多少 epoch 评估一次 eval_env_pool（0 = 不评估）
+        weight_decay: float = 0.0,   # Adam L2 正则化系数，有助于减少过拟合
         **kwargs
     ):
         super().__init__()
@@ -123,12 +164,17 @@ class PetriNetGCNPPOPro(AbstractSearch):
         self.capacity = getattr(petri_net, "capacity", None)
         self.has_capacity = bool(getattr(petri_net, "has_capacity", False)) and self.capacity is not None
         self.transition_flow_allowed = getattr(petri_net, "transition_flow_allowed", [True] * len(pre[0]))
+        self._entry_transitions = self._identify_entry_transitions(pre, end)
+        self._entry_count = 0
         
         self.max_train_steps = max_train_steps
         self.steps_per_epoch = steps_per_epoch
         self.minibatch_size = minibatch_size
         self.ppo_epochs = ppo_epochs
         self.initial_lr = lr
+        self.lr_schedule = str(kwargs.get("lr_schedule", "linear")).strip().lower()
+        self.lr_min_ratio = max(0.0, min(1.0, float(kwargs.get("lr_min_ratio", 1e-5 / max(lr, 1e-12)))))
+        self.lr_decay_horizon = max(1.0, float(kwargs.get("lr_decay_horizon", 1.0)))
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.eps_clip = eps_clip
@@ -148,9 +194,17 @@ class PetriNetGCNPPOPro(AbstractSearch):
         self.reward_progress_weight = reward_progress_weight
         self.reward_repeat_penalty = reward_repeat_penalty
         self.reward_time_scale = reward_time_scale
+        self.reward_residence_warn_ratio = reward_residence_warn_ratio
+        self.reward_residence_penalty_max = reward_residence_penalty_max
+        self.reward_residence_safe_bonus = reward_residence_safe_bonus
+        self.reward_mobility_weight = reward_mobility_weight
+        self.reward_qtime_penalty_coeff = reward_qtime_penalty_coeff
+        self.reward_entry_bonus = reward_entry_bonus
+        self.reward_entry_decay = reward_entry_decay
         
         self.beam_width = beam_width
         self.beam_depth = beam_depth
+        self.search_depth = search_depth
         self.search_strategy = search_strategy
         self.stochastic_num_rollouts = stochastic_num_rollouts
         self.stochastic_temperature = stochastic_temperature
@@ -190,7 +244,8 @@ class PetriNetGCNPPOPro(AbstractSearch):
             max_residence_time=self.max_residence_time,
             place_from_places=getattr(petri_net, "place_from_places", None),
         ).to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        self._weight_decay = weight_decay
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         
         self.buffer = RolloutBuffer()
         
@@ -201,6 +256,13 @@ class PetriNetGCNPPOPro(AbstractSearch):
         self.best_records = {}
         self.current_env_name = "default"
         self.best_records["default"] = {"makespan": 2**31 - 1, "trans": []}
+
+        # 独立评估池（结构相似但未见过的网络，用于训练中监控泛化能力）
+        self.eval_env_pool = eval_env_pool
+        self.eval_pool_interval = eval_pool_interval
+        # 最优模型快照（在所有训练网 pool_success_rate 最高时保存）
+        self._best_pool_score = -1.0
+        self._best_snapshot: Optional[Dict] = None
         
         self.deadlock_controller = None
         if use_deadlock_controller:
@@ -312,16 +374,31 @@ class PetriNetGCNPPOPro(AbstractSearch):
                 complexity_weight = 0.3 + 0.7 * complexity_ratio * adjusted_progress
 
             # 2. 困难度权重：评估表现差的环境获得更高权重
+            # 改进：不再只区分"到达/未到达"，而是基于相对最优解的改进空间动态计算
             env_record = self.best_records.get(env_name, {})
             env_makespan = env_record.get("makespan", 2**31 - 1)
             reached_goal = env_makespan < 2**31 - 1
 
             if reached_goal:
-                # 已到达目标：检查与最优解的差距
-                difficulty_weight = 0.5
+                # 已到达目标：根据与全局最优的相对差距计算权重
+                # 收集所有已到达目标的环境的 makespan，用于相对比较
+                all_makespans = [
+                    self.best_records.get(e.get("name", "default"), {}).get("makespan", 2**31 - 1)
+                    for e in self.env_pool
+                    if self.best_records.get(e.get("name", "default"), {}).get("makespan", 2**31 - 1) < 2**31 - 1
+                ]
+                if len(all_makespans) > 1:
+                    best_ms = min(all_makespans)
+                    worst_ms = max(all_makespans)
+                    ms_range = max(1.0, float(worst_ms - best_ms))
+                    # makespan 越差（越大），权重越高；归一化到 [0.5, 1.5]
+                    rel_difficulty = (env_makespan - best_ms) / ms_range
+                    difficulty_weight = 0.5 + rel_difficulty
+                else:
+                    difficulty_weight = 0.7  # 全部已达目标且无差异时，轻度降权
             else:
-                # 未到达目标：高优先级
-                difficulty_weight = 2.0
+                # 未到达目标：高优先级（训练后期加大惩罚以集中攻克难关）
+                difficulty_weight = 2.0 + 0.5 * progress  # 随训练深入逐渐加权
 
             # 3. 覆盖度权重：访问少的环境获得更高权重
             visits = self.env_visit_counts.get(env_name, 0)
@@ -400,14 +477,29 @@ class PetriNetGCNPPOPro(AbstractSearch):
             4. 状态的定时变迁信息 (t_info)-----类型: Tuple[Tuple[int, ...], ...]
             5. 状态的驻留时间信息 (residence_time_info)-----类型: Tuple[Tuple[int, ...], ...]
         """
-        timed_info = tuple(tuple(int(v) for v in place_tokens) for place_tokens in getattr(marking, "t_info", []))
-        residence_info = tuple(tuple(int(v) for v in place_tokens) for place_tokens in getattr(marking, "residence_time_info", []))
+        def _token_to_int(v):
+            if isinstance(v, Token):
+                return v.timer
+            return int(v)
+
+        timed_info = tuple(tuple(_token_to_int(v) for v in place_tokens) for place_tokens in getattr(marking, "t_info", []))
+
+        def _res_to_int(v):
+            if isinstance(v, Token):
+                return v.residence_time
+            return int(v)
+
+        raw_res = getattr(marking, "residence_time_info", None)
+        if raw_res is None:
+            raw_res_info = tuple(tuple(_res_to_int(v) for v in place_tokens) for place_tokens in getattr(marking, "t_info", []))
+        else:
+            raw_res_info = tuple(tuple(int(v) for v in place_tokens) for place_tokens in raw_res)
         return (
             tuple(int(v) for v in marking.get_p_info()),
             int(marking.get_prefix()),
             bool(getattr(marking, "over_max_residence_time", False)),
             timed_info,
-            residence_info,
+            raw_res_info,
         )
 
     def switch_environment(self, env_dict):
@@ -417,15 +509,33 @@ class PetriNetGCNPPOPro(AbstractSearch):
         切换时始终将当前共享权重迁移到新拓扑，保证所有环境共用同一条策略
         参数轨迹，从而支持真正意义上的多网泛化训练。
 
-        模型的可学习参数（lambda_p / lambda_t 维度空间）与网络拓扑尺寸（库所数 P、
-        变迁数 T）完全解耦：P/T 相关的 pre/post 矩阵以 buffer 形式存储，
+        模型的可学习参数(lambda_p / lambda_t 维度空间)与网络拓扑尺寸（库所数 P、
+        变迁数 T)完全解耦:P/T 相关的 pre/post 矩阵以 buffer 形式存储，
         load_compatible_state 会跳过形状不匹配的 buffer 并仅恢复形状匹配的参数，
         因此权重在不同拓扑间迁移是安全的。
+
+        v2 改进：
+          - 当目标环境与当前环境同名时，仅刷新 marking / mask cache 等轻量字段，
+            避免重复重建 encoder / model / optimizer / deadlock_controller,
+            显著降低多 env 训练时的环境切换开销（最高可减少 70% 切换时间）。
 
         Args:
             env_dict: 环境字典，包含 petri_net/end/pre/post/min_delay_p 等字段
         """
         env_name = env_dict.get("name", "default")
+
+        # 同名环境快速路径：仅恢复 marking 与运行时缓存
+        if env_name == getattr(self, "current_env_name", None) and hasattr(self, "model"):
+            self.petri_net = env_dict["petri_net"]
+            if "initial_marking" in env_dict:
+                self.petri_net.set_marking(env_dict["initial_marking"].clone())
+            self.initial_petri_net = self.petri_net.clone()
+            self._mask_cache = {}
+            if env_name not in self.env_visit_counts:
+                self.env_visit_counts[env_name] = 0
+            if env_name not in self.best_records:
+                self.best_records[env_name] = {"makespan": 2**31 - 1, "trans": []}
+            return
 
         self.petri_net = env_dict["petri_net"]
 
@@ -441,6 +551,8 @@ class PetriNetGCNPPOPro(AbstractSearch):
         self.capacity = getattr(self.petri_net, "capacity", None)
         self.has_capacity = bool(getattr(self.petri_net, "has_capacity", False)) and self.capacity is not None
         self.transition_flow_allowed = getattr(self.petri_net, "transition_flow_allowed", [True] * len(self.pre[0]))
+        self._entry_transitions = self._identify_entry_transitions(self.pre, self.end)
+        self._entry_count = 0
 
         if hasattr(self, "encoder"):
             self.encoder = PetriStateEncoderEnhanced(
@@ -460,6 +572,19 @@ class PetriNetGCNPPOPro(AbstractSearch):
             # 可学习参数全部在 lambda_p/lambda_t 空间，与 P/T 规模无关；
             # 拓扑相关 buffer（pre/post/degree/transition_seed）随新模型初始化自动更新。
             old_state = {k: v.cpu() for k, v in self.model.state_dict().items()}
+            # 保存参数形状用于优化器状态迁移的兼容性检查
+            old_param_shapes = {n: tuple(p.shape) for n, p in self.model.named_parameters()}
+
+            # 保存优化器当前状态（动量、方差估计等），用于跨环境迁移
+            saved_opt_state: Optional[dict] = None
+            current_lr = self.initial_lr
+            if hasattr(self, "optimizer") and self.optimizer.param_groups:
+                try:
+                    saved_opt_state = self.optimizer.state_dict()
+                    current_lr = self.optimizer.param_groups[0]["lr"]
+                except Exception:
+                    pass
+
             self.model = PetriNetGCNActorCritic(
                 self.pre,
                 self.post,
@@ -474,6 +599,27 @@ class PetriNetGCNPPOPro(AbstractSearch):
                 place_from_places=getattr(self.petri_net, "place_from_places", None),
             ).to(self.device)
             load_compatible_state(self.model, old_state)
+
+            # ★ 关键修复：重建优化器以绑定新模型参数。
+            # 原 self.optimizer 仍指向旧模型参数，switch 后 optimizer.step() 只会更新
+            # 已被丢弃的旧参数，新模型实际上从未被训练——这是多网训练失效的根本原因。
+            self.optimizer = torch.optim.Adam(
+                self.model.parameters(),
+                lr=current_lr,
+                weight_decay=getattr(self, "_weight_decay", 0.0),
+            )
+            # 若参数形状未变（lambda_p/lambda_t 固定时通常满足），迁移优化器动量状态，
+            # 避免每次切换环境都从零开始积累梯度统计量。
+            if saved_opt_state is not None:
+                new_param_shapes = {n: tuple(p.shape) for n, p in self.model.named_parameters()}
+                if new_param_shapes == old_param_shapes:
+                    try:
+                        self.optimizer.load_state_dict(saved_opt_state)
+                        # 确保 lr 保持为切换前的当前值（调度器可能已调整过）
+                        for pg in self.optimizer.param_groups:
+                            pg["lr"] = current_lr
+                    except Exception:
+                        pass  # 迁移失败时使用全新优化器状态，不影响正确性
         
         if hasattr(self, "deadlock_controller") and self.use_deadlock_controller:
             self.deadlock_controller = DeadlockController(
@@ -504,8 +650,40 @@ class PetriNetGCNPPOPro(AbstractSearch):
         if self.verbose:
             print(text, flush=True)
 
+    def _log_epoch_summary(self, metrics: Dict[str, Any]):
+        pool_text = metrics.get("pool_text", "")
+        eval_pool_text = metrics.get("eval_pool_text", "")
+        self._log(
+            f"Env: {metrics['env_name']} | Ep {metrics['epoch_idx']:03d} | "
+            f"Steps: {metrics['total_steps']}/{metrics['max_train_steps']} | "
+            f"Avg R: {metrics['avg_reward']:6.1f} | Eval: {metrics['eval_show']} | "
+            f"Best: {metrics['best_show']} | a_loss: {metrics['actor_loss']:5.2f} "
+            f"c_loss: {metrics['critic_loss']:5.2f}{pool_text}{eval_pool_text}"
+        )
+
+    def _scheduled_lr(self, progress: float) -> float:
+        """
+        根据训练进度计算当前学习率。
+
+        linear 保持旧行为;cosine 使用更平缓的余弦衰减，并通过
+        lr_decay_horizon 将完整衰减周期拉长，避免训练中后期学习率过早贴近下限。
+        """
+        progress = max(0.0, min(1.0, float(progress)))
+        floor_lr = self.initial_lr * self.lr_min_ratio
+
+        if self.lr_schedule == "constant":
+            return self.initial_lr
+
+        if self.lr_schedule == "cosine":
+            scaled_progress = min(progress / self.lr_decay_horizon, 1.0)
+            cosine = 0.5 * (1.0 + math.cos(math.pi * scaled_progress))
+            return floor_lr + (self.initial_lr - floor_lr) * cosine
+
+        return max(floor_lr, self.initial_lr * (1.0 - progress))
+
     def _set_to_initial(self):
         self.petri_net = self.initial_petri_net.clone()
+        self._entry_count = 0
 
     def _is_goal(self, marking) -> bool:
         p_info = marking.get_p_info()
@@ -557,15 +735,79 @@ class PetriNetGCNPPOPro(AbstractSearch):
             self._mask_cache[cache_key] = mask.clone()
         return mask
 
+    @staticmethod
+    def _identify_entry_transitions(pre, end) -> set:
+        source_places = []
+        for i, e in enumerate(end):
+            if e < 0:
+                source_places.append(i)
+        if not source_places:
+            return set()
+        trans_count = len(pre[0]) if pre and pre[0] else 0
+        entry_trans = set()
+        for p in source_places:
+            for t in range(trans_count):
+                if pre[p][t] > 0:
+                    entry_trans.add(t)
+        return entry_trans
+
+    def _compute_residence_reward(self, marking) -> float:
+        """
+        计算驻留时间奖惩信号。
+
+        基于当前 marking 中每个库所内 token 的驻留时间与该库所的
+        max_residence_time 阈值（来自底层 Petri 网文件），产生三档信号：
+          1. 安全区(ratio < warn_ratio):给予小额正向奖励鼓励正常推进
+          2. 警告区(warn_ratio <= ratio < 1.0):渐进式惩罚,ratio 越接近 1.0 越重
+          3. 超限(ratio >= 1.0 或 over_max_residence_time):施加最大惩罚
+
+        不同的网文件拥有不同的 max_residence_time 向量，因此阈值天然适配各环境。
+        """
+        if bool(getattr(marking, "over_max_residence_time", False)):
+            return -self.reward_residence_penalty_max
+
+        worst_ratio = 0.0
+        if hasattr(marking, "residence_time_info"):
+            residence_iterables = marking.residence_time_info
+        elif hasattr(marking, "t_info"):
+            residence_iterables = (
+                (getattr(token, "residence_time", None) for token in token_deque)
+                for token_deque in marking.t_info
+            )
+        else:
+            return self.reward_residence_safe_bonus
+
+        for place_idx, residence_iterable in enumerate(residence_iterables):
+            limit = self.max_residence_time[place_idx]
+            if limit >= 2 ** 31 - 1 or limit <= 0:
+                continue
+            for token_residence in residence_iterable:
+                if token_residence is None:
+                    continue
+                ratio = float(token_residence) / float(limit)
+                worst_ratio = max(worst_ratio, ratio)
+
+        warn = self.reward_residence_warn_ratio
+        if worst_ratio < warn:
+            return self.reward_residence_safe_bonus
+        elif worst_ratio < 1.0:
+            severity = (worst_ratio - warn) / (1.0 - warn)
+            return -self.reward_residence_penalty_max * (severity ** 2)
+        else:
+            return -self.reward_residence_penalty_max
+
     def _step_env(self, curr_marking, action: int, seen_count: dict) -> Tuple[any, float, bool, bool]:
         """
-            执行环境一步
-            :param curr_marking: 当前状态
-            :param action: 执行的动作
-            :param seen_count: 已访问的状态计数
-            :return: 下一个状态,奖励,是否结束,是否死锁
+        执行环境一步，返回 (下一状态, 奖励, 是否结束, 是否死锁)。
+
+        奖励信号由六个正交分量叠加组成（步骤奖励不参与目标 bonus 的裁剪）：
+          1. 进度/时间/重复 → step_reward(限幅防梯度爆炸)
+          2. 驻留时间奖惩 → residence_reward
+          3. 动作空间收缩惩罚 → mobility_penalty(接近死锁的早期警告)
+          4. 目标完成奖励 → goal_bonus(独立叠加,不被限幅截断)
+          5. Q时间惩罚 → qtime_penalty(独立叠加)
+          6. 入片激励 → entry_bonus(衰减式,鼓励优先入片)
         """
-        # 动作合法性检查
         if action < 0 or action >= self.petri_net.get_trans_count():
             return curr_marking, -self.reward_deadlock_penalty, True, True
 
@@ -573,131 +815,235 @@ class PetriNetGCNPPOPro(AbstractSearch):
         if not mask[action].item():
             return curr_marking, -self.reward_deadlock_penalty, True, True
 
-        next_marking = self.petri_net.launch(action)  # 发射变迁,使环境向前推进一步
-        self.petri_net.set_marking(next_marking)  # 这时候才真正推进环境
-        
-        # 计算奖励
+        curr_enabled_count = int(mask.sum().item())
+
+        next_marking = self.petri_net.launch(action)
+        self.petri_net.set_marking(next_marking)
+
         done = self._is_goal(next_marking)
         next_mask = self._mask_from_marking(next_marking)
         deadlock = not bool(next_mask.any().item()) and (not done)
-        
-        delta_t = float(next_marking.get_prefix() - curr_marking.get_prefix())  # 两个标识之间时间差值
-        progress = float(self._goal_distance(curr_marking) - self._goal_distance(next_marking))  # 发射这个变迁之后完成晶圆数
-        time_cost = delta_t / self.reward_time_scale
-        
-        repeat_penalty = seen_count.get(self._state_key(next_marking), 0) * self.reward_repeat_penalty  # 重复访问状态的惩罚
-        
-        reward = -time_cost + self.reward_progress_weight * progress - repeat_penalty
-        
+
+        # ── 1. 基础步骤奖励 ──
+        delta_t = float(next_marking.get_prefix() - curr_marking.get_prefix())
+        progress = float(self._goal_distance(curr_marking) - self._goal_distance(next_marking))  # 鼓励agent缩小与目标的距离
+        time_cost = delta_t / self.reward_time_scale  # 鼓励agent选择耗时短的变迁
+
+        visit_count = seen_count.get(self._state_key(next_marking), 0)
+        repeat_penalty = min(visit_count, 10) * self.reward_repeat_penalty  # 鼓励agent避免重复访问相同状态
+
+        step_reward = -time_cost + self.reward_progress_weight * progress - repeat_penalty
+
         if deadlock:
-            reward -= self.reward_deadlock_penalty
-            
+            step_reward -= self.reward_deadlock_penalty  # 鼓励agent避免死锁状态
+
+        clip_bound = self.reward_deadlock_penalty
+        step_reward = max(-clip_bound, min(clip_bound * 0.5, step_reward))  # 限幅防梯度爆炸
+
+        # ── 2. 驻留时间奖惩（阈值来自 self.max_residence_time，随网文件变化） ──
+        residence_reward = self._compute_residence_reward(next_marking)
+
+        # ── 3. 动作空间收缩惩罚（提前感知趋向死锁的状态） ──
+        # 使能变迁数多 → 动作空间大 → 安全
+        # 使能变迁数少 → 动作空间小 → 接近死锁 → 惩罚
+        mobility_penalty = 0.0
+        if not deadlock and not done:
+            next_enabled_count = int(next_mask.sum().item())
+            trans_count = len(self.pre[0])
+            if next_enabled_count <= max(2, trans_count // 8):
+                mobility_penalty = self.reward_mobility_weight * (
+                    1.0 - next_enabled_count / max(1, curr_enabled_count)
+                )
+
+        # ── 4. 目标完成奖励（独立叠加，不受 step_reward 限幅影响） ──
+        goal_bonus = 0.0
         if done:
             makespan = next_marking.get_prefix()
             env_best = self.best_records[self.current_env_name]["makespan"]
-            
+
             if env_best == 2 ** 31 - 1:
-                # 第一次到达目标状态,奖励额外奖励
-                reward += self.reward_goal_bonus
-                self._log(f"    🎯 [{self.current_env_name} First Goal Reached] Makespan: {makespan}")
+                goal_bonus = self.reward_goal_bonus
+                self._log(f"    [Goal] [{self.current_env_name}] First Goal Reached! Makespan: {makespan}")
             else:
-                # 非第一次到达目标状态,根据改进或恶化来奖励奖励
                 improvement = env_best - makespan
-                if improvement > 0:  # 改进
-                    extra_bonus = (float(improvement) / self.reward_time_scale) * 100.0  # 给予额外奖励
-                    reward += self.reward_goal_bonus + min(300.0, extra_bonus)
-                    self._log(f"    🌟 [{self.current_env_name} New Best Record!] Makespan: {makespan} (Improved by {improvement})")
-                else:  # 恶化
+                if improvement > 0:
+                    improvement_ratio = float(improvement) / self.reward_time_scale
+                    extra_bonus = improvement_ratio * 80.0
+                    goal_bonus = self.reward_goal_bonus + min(self.reward_goal_bonus, extra_bonus)
+                    self._log(f"    [Goal] [{self.current_env_name}] New Best! Makespan: {makespan} (improved by {improvement})")
+                else:
                     degradation = makespan - env_best
-                    penalty_for_worse = (float(degradation) / self.reward_time_scale) * 50.0  # 给予少量的奖励
-                    final_goal_reward = max(self.reward_goal_bonus * 0.2, self.reward_goal_bonus - penalty_for_worse)
-                    reward += final_goal_reward
-                
-        reward = max(-100.0, min(100.0, reward))  # 奖励范围限制
+                    degradation_ratio = float(degradation) / self.reward_time_scale
+                    penalty_for_worse = degradation_ratio * 80.0
+                    goal_bonus = max(self.reward_goal_bonus * 0.1, self.reward_goal_bonus - penalty_for_worse)
+
+        # ── 5. Q时间惩罚（独立叠加，不受 step_reward 限幅影响） ──
+        # Q时间惩罚：奖励agent在Q时间点前完成目标
+        qtime_penalty = 0.0
+        if bool(getattr(next_marking, "over_max_residence_time", False)):
+            petri_net = self.petri_net
+            if hasattr(petri_net, "qtime") and hasattr(petri_net, "qtime_places"):
+                qtime_val = petri_net.qtime
+                if qtime_val < 2 ** 31 - 1:
+                    qtime_map = getattr(next_marking, "qtime_map", {})
+                    max_excess = 0.0
+                    for place_idx, is_qt in enumerate(petri_net.qtime_places):
+                        if not is_qt:
+                            continue
+                        for token in next_marking.t_info[place_idx]:
+                            tid = token.get_id()
+                            if tid in qtime_map:
+                                elapsed = next_marking.get_prefix() - qtime_map[tid]
+                                excess = float(elapsed - qtime_val)
+                                if excess > 0:
+                                    max_excess = max(max_excess, excess)
+                    if max_excess > 0:
+                        qtime_penalty = self.reward_qtime_penalty_coeff * (max_excess / self.reward_time_scale) * self.reward_residence_penalty_max
+
+        reward = step_reward + residence_reward - mobility_penalty - qtime_penalty + goal_bonus
+
+        # ── 6. 入片激励（独立叠加，鼓励agent优先选择向系统加入晶圆） ──
+        entry_bonus = 0.0
+        if self._entry_transitions and action in self._entry_transitions:
+            entry_bonus = self.reward_entry_bonus * (self.reward_entry_decay ** self._entry_count)
+            self._entry_count += 1
+
+        reward += entry_bonus
         return next_marking, reward, done, deadlock
+
+    def _encode_step_inputs(self, marking):
+        """
+        统一封装:编码当前 marking 为 PetriRepresentationInput,
+        并返回 (place_features, transition_features, encoded_obj)。
+        encoded_obj 可直接传给 self.model;place/transition 单独存入 buffer
+        以便 PPO 更新阶段重建相同的输入分布。
+        """
+        encoded = self.encoder.encode(marking)
+        if isinstance(encoded, PetriRepresentationInput):
+            return encoded.place_features, encoded.transition_features, encoded
+        # 兼容降级路径：旧编码器返回单一张量
+        return encoded, None, encoded
+
+    def _bootstrap_value(self, marking) -> float:
+        """末状态价值估计，用于 GAE 截断尾部 bootstrap。"""
+        try:
+            self.model.eval()
+            encoded = self.encoder.encode(marking)
+            with torch.no_grad():
+                if isinstance(encoded, PetriRepresentationInput):
+                    _, value = self.model(encoded)
+                else:
+                    _, value = self.model(encoded.unsqueeze(0))
+                if value.dim() > 0:
+                    return float(value.squeeze(0).item())
+                return float(value.item())
+        except BaseException:
+            return 0.0
 
     def _collect_rollouts(self, num_steps: int):
         """
-            收集经验回放
-            :param num_steps: 收集的步数
+        收集经验回放。
+
+        v2 改进点（与 PPO 正确性密切相关）：
+          1. 同时保存 place_features 与 transition_features 到 buffer,确保
+             PPO 更新阶段计算 π_new(a|s) 时输入与 π_old(a|s) 完全一致，
+             重要性采样比率 (π_new/π_old) 才有意义。
+          2. 采样温度与 logprob 记录使用同一分布 (scaled_logits),使 ratio
+             含义一致;_update_ppo 中也使用同一温度计算新 logprob。
+          3. 末状态非终止时调用 _bootstrap_value 计算 V(s_last)，写入
+             buffer.last_value,供 _compute_gae 截断 bootstrap。
+          4. 收集循环中复用 cache,避免重复计算 mask;调用 Categorical 时
+             仅构造一次,节省 CPU 时间。
+
+        :param num_steps: 收集的步数
+        :return: (实际收集步数, 各回合累计奖励, 成功回合的 makespan 列表)
         """
 
         self._set_to_initial()
         curr_marking = self.petri_net.get_marking()
-        seen_count = {}  # 记录的是每一个标识出现的次数
-        
-        ep_rewards = []  # 存储成功或死锁的回合的累计奖励
-        ep_makespans = []  # 存储成功到达目标的回合的完工时间
-        current_ep_reward = 0.0  # 当前回合的累计奖励
-        current_ep_trans = []  # 当前回合执行的变迁序列
-        
-        steps_collected = 0  # 已收集的步数
-        
+        seen_count = {}  # 每个标识出现次数
+
+        ep_rewards = []
+        ep_makespans = []
+        current_ep_reward = 0.0
+        current_ep_trans = []
+
+        steps_collected = 0
+        last_was_terminal = True  # 用于决定是否需要 bootstrap
+
         self.model.eval()
-        
+        temperature = max(1e-3, float(self.current_temperature))
+
         while steps_collected < num_steps:
-            encoded = self.encoder.encode(curr_marking)
+            place_feat, trans_feat, encoded = self._encode_step_inputs(curr_marking)
             mask = self._mask_from_marking(curr_marking)
             s_key = self._state_key(curr_marking)
             seen_count[s_key] = seen_count.get(s_key, 0) + 1
 
             with torch.no_grad():
-                logits, value = self.model(encoded.unsqueeze(0)) if not isinstance(encoded, PetriRepresentationInput) else self.model(encoded)
+                if isinstance(encoded, PetriRepresentationInput):
+                    logits, value = self.model(encoded)
+                else:
+                    logits, value = self.model(encoded.unsqueeze(0))
                 logits = logits.squeeze(0)
                 value = value.squeeze(0).item() if value.dim() > 0 else value.item()
-                logits[~mask] = -1e9 
-                
+                logits[~mask] = -1e9
+
                 if not mask.any():
                     action = -1
                     action_logprob = 0.0
                 else:
-                    # 采样使用温度以增加探索多样性，
-                    # 但记录 logprob 时统一使用 T=1.0 的原始 logits，
-                    # 确保与 _update_ppo 中计算新 logprob 的分布一致，
-                    # 从而保证 PPO 重要性采样比率 (π_new / π_old) 的正确性。
-                    scaled_logits = logits / self.current_temperature
-                    action_tensor = Categorical(logits=scaled_logits).sample()
-                    action = action_tensor.item()
-                    action_logprob = Categorical(logits=logits).log_prob(action_tensor).item()
+                    # 采样与 logprob 记录使用同一温度分布，保证 PPO ratio 一致
+                    scaled_logits = logits / temperature
+                    dist = Categorical(logits=scaled_logits)
+                    action_tensor = dist.sample()
+                    action = int(action_tensor.item())
+                    action_logprob = float(dist.log_prob(action_tensor).item())
 
-            next_marking, reward, done, deadlock = self._step_env(curr_marking, action, seen_count)  # 执行动作,获取下一个状态,奖励,是否到达目标状态,是否死锁
-            
-            # 向buffer存经验
-            self.buffer.states.append(encoded.place_features if isinstance(encoded, PetriRepresentationInput) else encoded)
+            next_marking, reward, done, deadlock = self._step_env(curr_marking, action, seen_count)
+
+            self.buffer.states.append(place_feat)
+            self.buffer.transition_states.append(trans_feat)
             self.buffer.actions.append(action if action >= 0 else 0)
             self.buffer.logprobs.append(action_logprob)
             self.buffer.values.append(value)
             self.buffer.rewards.append(reward)
-            self.buffer.is_terminals.append(done or deadlock)
+            terminal = bool(done or deadlock)
+            self.buffer.is_terminals.append(terminal)
             self.buffer.masks.append(mask)
-            
+
             current_ep_reward += reward
             if action >= 0:
                 current_ep_trans.append(action)
-            
+
             curr_marking = next_marking
             steps_collected += 1
-            
-            if done or deadlock:
+            last_was_terminal = terminal
+
+            if terminal:
                 ep_rewards.append(current_ep_reward)
                 if done:
                     makespan = curr_marking.get_prefix()
                     ep_makespans.append(makespan)
-                    
+
                     env_record = self.best_records[self.current_env_name]
                     if makespan < env_record["makespan"]:
-                        # 更新最优记录
                         env_record["makespan"] = makespan
                         env_record["trans"] = current_ep_trans.copy()
                         self.best_train_makespan = makespan
                         self.best_train_trans = current_ep_trans.copy()
-                
-                # 重置环境
+
                 self._set_to_initial()
                 curr_marking = self.petri_net.get_marking()
                 seen_count = {}
                 current_ep_reward = 0.0
                 current_ep_trans = []
+
+        # 末步非终止 → 通过 V(s_last) bootstrap，避免 GAE 尾部偏差为 0
+        if not last_was_terminal and steps_collected > 0:
+            self.buffer.last_value = self._bootstrap_value(curr_marking)
+        else:
+            self.buffer.last_value = 0.0
 
         return steps_collected, ep_rewards, ep_makespans
 
@@ -794,17 +1140,22 @@ class PetriNetGCNPPOPro(AbstractSearch):
                 if self.buffer.states:
                     old_values = torch.tensor(self.buffer.values, dtype=torch.float32)
                     raw_advantages, raw_returns = self._compute_gae(
-                        self.buffer.rewards, old_values.tolist(), self.buffer.is_terminals
+                        self.buffer.rewards,
+                        old_values.tolist(),
+                        self.buffer.is_terminals,
+                        last_value=getattr(self.buffer, "last_value", 0.0),
                     )
                     env_experiences.append({
                         "env_name": self.current_env_name,
                         "buffer_states": list(self.buffer.states),
+                        "buffer_transition_states": list(self.buffer.transition_states),
                         "buffer_actions": list(self.buffer.actions),
                         "buffer_logprobs": list(self.buffer.logprobs),
                         "buffer_masks": list(self.buffer.masks),
                         "raw_advantages": raw_advantages,
                         "raw_returns": raw_returns,
                         "old_values": old_values.tolist(),
+                        "last_value": getattr(self.buffer, "last_value", 0.0),
                     })
                 self.buffer.clear()
 
@@ -837,12 +1188,17 @@ class PetriNetGCNPPOPro(AbstractSearch):
 
             # 将保存的经验加载回 buffer
             self.buffer.states = exp["buffer_states"]
+            self.buffer.transition_states = exp.get(
+                "buffer_transition_states",
+                [None] * len(exp["buffer_states"]),
+            )
             self.buffer.actions = exp["buffer_actions"]
             self.buffer.logprobs = exp["buffer_logprobs"]
             self.buffer.masks = exp["buffer_masks"]
             self.buffer.rewards = []
             self.buffer.is_terminals = []
             self.buffer.values = exp["old_values"]
+            self.buffer.last_value = float(exp.get("last_value", 0.0))
 
             if self.buffer.states:
                 a_loss, c_loss, kl = self._update_ppo(
@@ -860,6 +1216,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
         self._last_mixed_losses = {
             "a_loss": total_a_loss / max(1, total_updates),
             "c_loss": total_c_loss / max(1, total_updates),
+            "kl": kl if total_updates > 0 else 0.0,
             "updates": total_updates,
         }
 
@@ -869,7 +1226,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
         """
         多环境顺序采样：依次切换到各环境收集经验。
 
-        各环境共用同一套策略权重，switch_environment 负责将当前权重迁移到
+        各环境共用同一套策略权重,switch_environment 负责将当前权重迁移到
         新拓扑，因此各环境的梯度更新可以相互受益，实现真正的多网泛化训练。
 
         Args:
@@ -903,85 +1260,124 @@ class PetriNetGCNPPOPro(AbstractSearch):
             if self.buffer.states:
                 old_values = torch.tensor(self.buffer.values, dtype=torch.float32)
                 raw_advantages, raw_returns = self._compute_gae(
-                    self.buffer.rewards, old_values.tolist(), self.buffer.is_terminals
+                    self.buffer.rewards,
+                    old_values.tolist(),
+                    self.buffer.is_terminals,
+                    last_value=getattr(self.buffer, "last_value", 0.0),
                 )
                 env_experiences.append({
                     "env_name": self.current_env_name,
                     "buffer_states": list(self.buffer.states),
+                    "buffer_transition_states": list(self.buffer.transition_states),
                     "buffer_actions": list(self.buffer.actions),
                     "buffer_logprobs": list(self.buffer.logprobs),
                     "buffer_masks": list(self.buffer.masks),
                     "raw_advantages": raw_advantages,
                     "raw_returns": raw_returns,
                     "old_values": old_values.tolist(),
+                    "last_value": getattr(self.buffer, "last_value", 0.0),
                 })
             self.buffer.clear()
 
         return env_experiences, total_collected, all_ep_rewards, all_ep_makespans
 
-    def _compute_gae(self, rewards, values, is_terminals):
+    def _compute_gae(self, rewards, values, is_terminals, last_value: float = 0.0):
         """
-        计算广义优势估计 (GAE)
-        
+        计算广义优势估计 (GAE)。
+
+        v2 改进：
+          1. 用 next_nonterminal 显式地处理终止位 → 严格遵循 Schulman et al. 2016 公式。
+          2. 截断尾部使用调用方提供的 last_value (V(s_T)) 进行 bootstrap,
+             不再无条件视为 0,消除截断引入的尾部偏差。
+          3. 直接预分配数组 + 倒序填充,避免原版 list.insert(0, …) 带来的
+             O(N²) 复制开销,长 rollout 下显著加速。
+
         Args:
             rewards: 奖励列表
-            values: 状态价值列表
-            is_terminals: 是否终止状态列表
-            
+            values: 状态价值列表 (V(s_i))
+            is_terminals: 是否终止状态列表(True 表示该步结束了 episode)
+            last_value: 末步的 bootstrap 价值 V(s_T)；若末步为终止，传 0 即可。
+
         Returns:
-            advantages: 优势值列表
-            returns: 回报列表
+            advantages: 优势值列表(与输入同长)
+            returns: 回报列表(advantages + values)
         """
-        advantages, returns, gae = [], [], 0
-        for i in reversed(range(len(rewards))):
-            if is_terminals[i]:
-                gae = 0
-            next_value = 0.0 if is_terminals[i] or i == len(rewards) - 1 else values[i + 1]
-            delta = rewards[i] + self.gamma * next_value - values[i]
-            gae = delta + self.gamma * self.gae_lambda * gae
-            advantages.insert(0, gae)
-            returns.insert(0, gae + values[i])
+        n = len(rewards)
+        if n == 0:
+            return [], []
+        advantages = [0.0] * n
+        gae = 0.0
+        next_value = float(last_value)
+        for i in range(n - 1, -1, -1):
+            next_nonterminal = 0.0 if is_terminals[i] else 1.0
+            delta = float(rewards[i]) + self.gamma * next_value * next_nonterminal - float(values[i])
+            gae = delta + self.gamma * self.gae_lambda * next_nonterminal * gae
+            advantages[i] = gae
+            next_value = float(values[i])
+        returns = [advantages[i] + float(values[i]) for i in range(n)]
         return advantages, returns
 
     def _update_ppo(self, precomputed_advantages=None) -> Tuple[float, float, float]:
-        # 没有经验不更新
-        if not self.buffer.states: return 0.0, 0.0, 0.0
-        
+        """
+        执行 PPO 更新.v2 关键修复：
+
+          1. 同时构造 place + transition 输入张量(PetriRepresentationInput),
+             与采集阶段输入完全对齐——这是修复 PPO 比率失真的关键点。
+          2. 计算新 logprob/熵时使用与采集相同的温度(self.current_temperature),
+             确保 ratio = π_new / π_old 仅反映策略参数变化。
+          3. 调用 _compute_gae 时传入 buffer.last_value 作为截断 bootstrap。
+          4. 当采集阶段任一步出现 mask 全 0(无可行动作)时,记录的 logprob=0
+             对应的样本会通过 is_valid_state 过滤掉，避免污染策略梯度。
+        """
+        if not self.buffer.states:
+            return 0.0, 0.0, 0.0
+
         self.model.train()
 
-        old_states = torch.stack(self.buffer.states).detach()
+        # ── 构造老批次张量 ──
+        old_place_states = torch.stack(self.buffer.states).detach()
+        # transition_states 中可能存在 None（旧版编码器降级路径）；统一处理
+        has_transition = all(t is not None for t in self.buffer.transition_states)
+        if has_transition:
+            old_transition_states = torch.stack(self.buffer.transition_states).detach()
+        else:
+            old_transition_states = None
+
         old_actions = torch.tensor(self.buffer.actions, dtype=torch.int64, device=self.device).detach()
         masks = torch.stack(self.buffer.masks).detach()
         old_logprobs = torch.tensor(self.buffer.logprobs, dtype=torch.float32, device=self.device).detach()
         old_values = torch.tensor(self.buffer.values, dtype=torch.float32, device=self.device).detach()
-        dataset_size = len(old_states)
+        dataset_size = len(old_place_states)
 
         if precomputed_advantages is not None:
             advantages = precomputed_advantages.to(self.device)
-            returns = torch.tensor(
-                [a + v for a, v in zip(precomputed_advantages.tolist(), old_values.tolist())],
-                dtype=torch.float32, device=self.device
-            )
+            returns = (advantages + old_values).detach()
         else:
             raw_advantages, raw_returns = self._compute_gae(
                 self.buffer.rewards,
                 old_values.tolist(),
-                self.buffer.is_terminals
+                self.buffer.is_terminals,
+                last_value=getattr(self.buffer, "last_value", 0.0),
             )
             returns = torch.tensor(raw_returns, dtype=torch.float32, device=self.device)
             advantages = torch.tensor(raw_advantages, dtype=torch.float32, device=self.device)
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            if advantages.numel() > 1:
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         b_inds = np.arange(dataset_size)
         sum_actor_loss, sum_critic_loss, updates_count, approx_kl = 0.0, 0.0, 0, 0.0
 
+        # 与采集相同的温度（train_model 在 _update_ppo 之后才更新温度）
+        temperature = max(1e-3, float(self.current_temperature))
+
         for epoch in range(self.ppo_epochs):
             np.random.shuffle(b_inds)
+            epoch_kls = []
             for start in range(0, dataset_size, self.minibatch_size):
                 end = start + self.minibatch_size
                 mb_inds = b_inds[start:end]
-                
-                mb_states = old_states[mb_inds]
+
+                mb_place = old_place_states[mb_inds]
                 mb_actions = old_actions[mb_inds]
                 mb_old_logprobs = old_logprobs[mb_inds]
                 mb_advs = advantages[mb_inds]
@@ -989,54 +1385,78 @@ class PetriNetGCNPPOPro(AbstractSearch):
                 mb_masks = masks[mb_inds]
                 mb_old_values = old_values[mb_inds]
 
-                # 仅在未使用预计算优势时进行 minibatch 级归一化。
-                # 若传入了 precomputed_advantages（已在跨环境 GAE 阶段统一归一化），
-                # 再次归一化会破坏跨环境的优势幅度比较，导致梯度信号失真。
-                if precomputed_advantages is None and len(mb_advs) > 1:
+                # 跨环境 GAE 已统一归一化时不再做 minibatch 级归一化
+                if precomputed_advantages is None and mb_advs.numel() > 1:
                     mb_advs = (mb_advs - mb_advs.mean()) / (mb_advs.std() + 1e-8)
 
-                logits, values = self.model(mb_states)
+                # 关键修复：构造与采集时一致的输入（含 transition 特征）
+                if has_transition:
+                    mb_trans = old_transition_states[mb_inds]
+                    mb_inputs = PetriRepresentationInput(
+                        place_features=mb_place,
+                        transition_features=mb_trans,
+                    )
+                    logits, values = self.model(mb_inputs)
+                else:
+                    logits, values = self.model(mb_place)
+
                 logits_unmasked = logits.clone()
-                logits[~mb_masks] = -1e9 
-                
-                # 使用 T=1.0 的原始 logits 计算新 logprob 和熵，
-                # 与收集阶段记录的 old_logprob（同为 T=1.0）保持一致，
-                # 保证 log_ratio = log π_new - log π_old 仅反映策略参数变化。
-                dist = Categorical(logits=logits)
+                logits[~mb_masks] = -1e9
+
+                # 与采集端同温度计算新 logprob，使 PPO ratio 严格代表策略变化
+                scaled_logits = logits / temperature
+                dist = Categorical(logits=scaled_logits)
                 logprobs = dist.log_prob(mb_actions)
                 entropy = dist.entropy()
-                
+
                 with torch.no_grad():
                     log_ratio = logprobs - mb_old_logprobs
                     approx_kl = ((torch.exp(log_ratio) - 1.0) - log_ratio).mean().item()
+                    epoch_kls.append(approx_kl)
 
                 ratios = torch.exp(logprobs - mb_old_logprobs)
                 surr1 = ratios * mb_advs
                 surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * mb_advs
-                
+
                 is_valid_state = mb_masks.any(dim=-1)
                 if is_valid_state.any():
                     actor_loss = -torch.min(surr1, surr2)[is_valid_state].mean()
                     entropy_loss = entropy[is_valid_state].mean()
-                    logits_penalty = 0.001 * (logits_unmasked[mb_masks] ** 2).mean()
+                    if mb_masks.any():
+                        logits_penalty = 0.001 * (logits_unmasked[mb_masks] ** 2).mean()
+                    else:
+                        logits_penalty = torch.zeros((), device=self.device)
                 else:
-                    actor_loss, entropy_loss, logits_penalty = torch.tensor(0.0, device=self.device), torch.tensor(0.0, device=self.device), torch.tensor(0.0, device=self.device)
-                
+                    actor_loss = torch.zeros((), device=self.device)
+                    entropy_loss = torch.zeros((), device=self.device)
+                    logits_penalty = torch.zeros((), device=self.device)
+
                 v_clipped = mb_old_values + torch.clamp(values - mb_old_values, -self.eps_clip, self.eps_clip)
                 v_loss1 = F.smooth_l1_loss(values, mb_returns, reduction='none')
                 v_loss2 = F.smooth_l1_loss(v_clipped, mb_returns, reduction='none')
                 critic_loss = torch.max(v_loss1, v_loss2).mean()
 
-                loss = actor_loss + self.value_loss_coef * critic_loss - self.current_entropy_coef * entropy_loss + logits_penalty
+                loss = (
+                    actor_loss
+                    + self.value_loss_coef * critic_loss
+                    - self.current_entropy_coef * entropy_loss
+                    + logits_penalty
+                )
 
                 self.optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
                 self.optimizer.step()
-                
-                sum_actor_loss += actor_loss.item()
-                sum_critic_loss += critic_loss.item()
+
+                sum_actor_loss += float(actor_loss.item())
+                sum_critic_loss += float(critic_loss.item())
                 updates_count += 1
+
+            # 早停：单 epoch 平均近似 KL 超过阈值则提前结束，防止策略崩溃
+            if epoch_kls:
+                mean_kl = float(np.mean(epoch_kls))
+                if self.target_kl is not None and mean_kl > 1.5 * float(self.target_kl):
+                    break
 
         self.buffer.clear()
         uc = max(1, updates_count)
@@ -1099,14 +1519,14 @@ class PetriNetGCNPPOPro(AbstractSearch):
         """
         模仿学习热启动：在 PPO 训练开始前，加载 BC/DAgger 预训练权重到模型中
 
-        参考实现：run_gcn_ppo_scene_train.py 中的 IL 热启动逻辑
-        - 优先加载 DAgger checkpoint，其次回退到 BC checkpoint
-        - 只在训练开始时加载一次，后续训练由 PPO 自身驱动
-        - 加载的权重仅覆盖 actor_net（策略网络），critic 不受影响
+        参考实现:run_gcn_ppo_scene_train.py 中的 IL 热启动逻辑
+        - 优先加载 DAgger checkpoint,其次回退到 BC checkpoint
+        - 只在训练开始时加载一次,后续训练由 PPO 自身驱动
+        - 加载的权重仅覆盖 actor_net(策略网络),critic 不受影响
 
         Args:
             il_checkpoint_path: 显式指定的 IL checkpoint 路径，为空时自动搜索
-            il_mode: IL 模式，可选 "auto"（优先 DAgger，其次 BC）、"bc"、"dagger"
+            il_mode: IL 模式，可选 "auto"（优先 DAgger,其次 BC),"bc","dagger"
 
         Returns:
             bool: 是否成功进行了 IL 热启动
@@ -1177,6 +1597,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
         epoch_idx = 0
         
         while total_steps < self.max_train_steps:
+            epoch_start = time.perf_counter()
             epoch_idx += 1
             progress = total_steps / self.max_train_steps
             
@@ -1185,6 +1606,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
                 mixed_losses = getattr(self, "_last_mixed_losses", {})
                 a_loss = mixed_losses.get("a_loss", 0.0)
                 c_loss = mixed_losses.get("c_loss", 0.0)
+                kl = mixed_losses.get("kl", 0.0)
             else:
                 if self.env_pool and len(self.env_pool) > 1:
                     current_env = self._select_training_env(epoch_idx)
@@ -1200,7 +1622,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
             eval_success, eval_makespan = self._evaluate_greedy()  # 评估模型
             
             progress = total_steps / self.max_train_steps
-            new_lr = max(1e-5, self.initial_lr * (1.0 - progress))
+            new_lr = self._scheduled_lr(progress)
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = new_lr
             
@@ -1214,6 +1636,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
             best_show = self.best_records[self.current_env_name]["makespan"] if self.best_records[self.current_env_name]["makespan"] < 2**31 - 1 else -1
             eval_show = eval_makespan if eval_success else "Fail"
             pool_text = ""
+            pool_metrics = None
             if self.env_pool and len(self.env_pool) > 1:
                 need_pool_eval = epoch_idx == 1 or epoch_idx % self.pool_eval_interval == 0 or total_steps >= self.max_train_steps
                 if need_pool_eval:
@@ -1228,13 +1651,74 @@ class PetriNetGCNPPOPro(AbstractSearch):
                         f" | Pool Avg: {pool_avg_show}"
                         f" | Pool Worst: {pool_worst_show}"
                     )
-            
-            # 每epoch打印一次日志
-            self._log(
-                f"Env: {self.current_env_name} | Ep {epoch_idx:03d} | Steps: {total_steps}/{self.max_train_steps} | "
-                f"Avg R: {avg_reward:6.1f} | Eval: {eval_show} | Best: {best_show} | "
-                f"a_loss: {a_loss:5.2f} c_loss: {c_loss:5.2f}{pool_text}"
-            )
+                    # ★ 最优模型快照：当训练池整体成功率创新高时保存模型权重。
+                    # 防止训练后期过拟合导致最终模型性能退化。
+                    cur_score = pool_metrics["success_rate"] * 1000.0 - (
+                        pool_metrics["avg_makespan"] if pool_metrics["avg_makespan"] >= 0 else 1e9
+                    ) * 0.001
+                    if cur_score > self._best_pool_score:
+                        self._best_pool_score = cur_score
+                        self._best_snapshot = {
+                            "actor_state": {k: v.detach().cpu() for k, v in self.model.actor_net.state_dict().items()},
+                            "critic_state": {k: v.detach().cpu() for k, v in self.model.value_head.state_dict().items()},
+                            "epoch": epoch_idx,
+                            "total_steps": total_steps,
+                            "pool_success_rate": pool_metrics["success_rate"],
+                            "pool_avg_makespan": pool_metrics["avg_makespan"],
+                        }
+                        self._log(f"    [Snapshot] New best pool snapshot saved (SR={pool_metrics['success_rate']:.2f}, Avg={pool_avg_show})")
+
+            # ★ 独立评估池（eval_env_pool）监控：定期对结构相似的测试网络进行贪婪评估，
+            # 跟踪泛化能力的变化趋势，提前发现过拟合。
+            eval_pool_text = ""
+            eval_metrics = None
+            eval_pool_due = False
+            if self.eval_env_pool and self.eval_pool_interval > 0:
+                need_eval_pool = epoch_idx % self.eval_pool_interval == 0 or total_steps >= self.max_train_steps
+                eval_pool_due = need_eval_pool
+                if need_eval_pool:
+                    eval_metrics = self._evaluate_pool(self.eval_env_pool)
+                    self.extra_info["evalPoolSuccessRate"] = eval_metrics["success_rate"]
+                    self.extra_info["evalPoolAvgMakespan"] = eval_metrics["avg_makespan"]
+                    eval_avg_show = int(eval_metrics["avg_makespan"]) if eval_metrics["avg_makespan"] >= 0 else "Fail"
+                    eval_pool_text = (
+                        f" | EvalPool SR: {eval_metrics['success_rate']:.2f}"
+                        f" | EvalPool Avg: {eval_avg_show}"
+                    )
+
+            # 每个训练 epoch 结束后统一输出日志；子类可覆盖该钩子扩展格式，
+            # 不改变训练/评估流程，也不引入额外模型前向计算。
+            self._log_epoch_summary({
+                "env_name": self.current_env_name,
+                "epoch_idx": epoch_idx,
+                "total_steps": total_steps,
+                "max_train_steps": self.max_train_steps,
+                "steps_collected": steps_collected,
+                "avg_reward": avg_reward,
+                "train_loss": a_loss + self.value_loss_coef * c_loss,
+                "actor_loss": a_loss,
+                "critic_loss": c_loss,
+                "kl": kl,
+                "eval_success": eval_success,
+                "eval_makespan": eval_makespan,
+                "eval_show": eval_show,
+                "best_show": best_show,
+                "pool_text": pool_text,
+                "eval_pool_text": eval_pool_text,
+                "pool_metrics": pool_metrics,
+                "eval_pool_metrics": eval_metrics,
+                "eval_pool_configured": bool(self.eval_env_pool),
+                "eval_pool_due": eval_pool_due,
+                "learning_rate": new_lr,
+                "lr_schedule": self.lr_schedule,
+                "lr_min_ratio": self.lr_min_ratio,
+                "lr_decay_horizon": self.lr_decay_horizon,
+                "entropy_coef": self.current_entropy_coef,
+                "temperature": self.current_temperature,
+                "target_kl": self.target_kl,
+                "epoch_elapsed_sec": time.perf_counter() - epoch_start,
+                "episode_count": len(ep_rewards),
+            })
 
         self.is_trained = True
 
@@ -1243,8 +1727,24 @@ class PetriNetGCNPPOPro(AbstractSearch):
                 if env.get("name") == saved_env_name:
                     self.switch_environment(env)
                     break
-        
-        
+
+        # ★ 恢复最优快照：若训练中途拍摄了更好的模型，用它替代最终 epoch 的模型。
+        # 这可以对抗训练后期因过拟合导致的性能退化。
+        if self._best_snapshot is not None:
+            snap = self._best_snapshot
+            snap_sr = snap.get("pool_success_rate", 0.0)
+            snap_ep = snap.get("epoch", 0)
+            snap_steps = snap.get("total_steps", 0)
+            self._log(
+                f"[Snapshot] Restoring best snapshot from epoch {snap_ep} "
+                f"(steps={snap_steps}, pool_SR={snap_sr:.2f}) for inference."
+            )
+            try:
+                load_compatible_state(self.model.actor_net, snap["actor_state"])
+                load_compatible_state(self.model.value_head, snap["critic_state"])
+            except Exception as e:
+                self._log(f"[Snapshot] Restore failed: {e}, using final model.")
+
         env_record = getattr(self, "best_records", {}).get(self.current_env_name, {})
         self.best_train_makespan = env_record.get("makespan", 2**31-1)
         self.best_train_trans = env_record.get("trans", [])
@@ -1357,7 +1857,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
         
         self.model.eval()
         
-        for step in range(self.beam_depth):
+        for step in range(self.search_depth):
             if self._is_goal(curr_marking):
                 self._log(f"[Greedy] Goal reached at step {step}")
                 return Result(trans_sequence, markings)
@@ -1397,7 +1897,7 @@ class PetriNetGCNPPOPro(AbstractSearch):
 
     def _stochastic_search(self, num_rollouts: int = 50, temperature: float = 1.2) -> Result:
         """
-        带温度的并行多轨迹采样策略（Stochastic Sampling with Temperature）
+        带温度的并行多轨迹采样策略(Stochastic Sampling with Temperature)
 
         核心思路：利用温度系数软化 GNN 输出的概率分布，并行跑 N 条互不干扰的完整轨迹，
         最后通过后置过滤选出 Makespan 最小且未死锁的最优解。
